@@ -12,6 +12,7 @@
 
     <application
         android:label="NotifBaca"
+        android:icon="@mipmap/ic_launcher"
         android:theme="@android:style/Theme.Material.Light"
         android:allowBackup="true">
 
