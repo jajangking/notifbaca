@@ -1,0 +1,10 @@
+# build artifacts
+base.apk
+unsigned.apk
+*.apk
+*.idsig
+dexout/
+obj/
+
+# RAHASIA - jangan pernah commit
+keystore/
