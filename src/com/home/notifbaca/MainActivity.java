@@ -7,11 +7,16 @@ import android.content.SharedPreferences;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
+import android.speech.tts.TextToSpeech;
+import android.speech.tts.Voice;
 import android.text.InputType;
+import android.util.Log;
+import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -19,6 +24,14 @@ public class MainActivity extends Activity {
     private TextView status;
     private EditText block;
     private CheckBox btOnly;
+    private CheckBox clockCb;
+    private EditText clockEdit;
+    private CheckBox summaryCb;
+    private EditText summaryEdit;
+    private Spinner voiceSp;
+    private TextToSpeech pickerTts;
+    private final java.util.List<String> voiceNames = new java.util.ArrayList<>();
+    private final java.util.Map<String, Voice> voiceMap = new java.util.HashMap<>();
 
     @Override
     protected void onCreate(Bundle saved) {
@@ -55,12 +68,101 @@ public class MainActivity extends Activity {
         });
         root.addView(btOnly);
 
+        clockCb = new CheckBox(this);
+        clockCb.setText("Umumkan jam di jadwal berikut");
+        clockCb.setChecked("1".equals(sp.getString("clock", "")));
+        root.addView(clockCb);
+
+        clockEdit = new EditText(this);
+        clockEdit.setHint("Jam (HH:mm, pisah koma), mis. 19:00, 22:00");
+        clockEdit.setText(sp.getString("clocktimes", ""));
+        root.addView(clockEdit);
+
+        summaryCb = new CheckBox(this);
+        summaryCb.setText("Ringkasan notif tiap hari");
+        summaryCb.setChecked("1".equals(sp.getString("summary", "")));
+        root.addView(summaryCb);
+
+        summaryEdit = new EditText(this);
+        summaryEdit.setHint("Jam ringkasan (HH:mm), mis. 07:00");
+        summaryEdit.setText(sp.getString("summarytime", "07:00"));
+        root.addView(summaryEdit);
+
+        TextView lblVoice = new TextView(this);
+        lblVoice.setText("Suara TTS:");
+        root.addView(lblVoice);
+
+        voiceNames.add("Automatis (default)");
+        voiceSp = new Spinner(this);
+        ArrayAdapter<String> va = new ArrayAdapter<>(this,
+                android.R.layout.simple_spinner_item, voiceNames);
+        va.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        voiceSp.setAdapter(va);
+        root.addView(voiceSp);
+
+        Button testVoice = new Button(this);
+        testVoice.setText("Tes suara terpilih");
+        testVoice.setOnClickListener(v -> {
+            if (pickerTts == null) {
+                Toast.makeText(this, "TTS belum siap", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            String sel = voiceSp.getSelectedItem() == null ? ""
+                    : voiceSp.getSelectedItem().toString();
+            Voice vv = voiceMap.get(sel);
+            if (vv != null) {
+                try {
+                    pickerTts.setVoice(vv);
+                } catch (Exception e) {
+                    Log.w("NotifBaca", "setVoice gagal", e);
+                }
+            }
+            pickerTts.speak("Halo, ini contoh suara yang dipilih.", TextToSpeech.QUEUE_FLUSH, null, "nbtest");
+        });
+        root.addView(testVoice);
+
+        pickerTts = new TextToSpeech(this, status -> {
+            if (status == TextToSpeech.SUCCESS) {
+                final java.util.Set<Voice> vs = pickerTts.getVoices();
+                runOnUiThread(() -> {
+                    if (vs == null) return;
+                    voiceNames.clear();
+                    voiceNames.add("Automatis (default)");
+                    voiceMap.clear();
+                    String savedVoice = sp.getString("voice", "");
+                    int sel = 0;
+                    int idx = 1;
+                    for (Voice v : vs) {
+                        if (v == null || v.getName() == null) continue;
+                        java.util.Set<String> feats = v.getFeatures();
+                        String label = v.getName();
+                        if (feats != null && feats.contains("genderMale")) label += " (pria)";
+                        if (feats != null && feats.contains("genderFemale")) label += " (wanita)";
+                        voiceNames.add(label);
+                        voiceMap.put(label, v);
+                        if (savedVoice.equals(v.getName())) sel = idx;
+                        idx++;
+                    }
+                    ((ArrayAdapter) voiceSp.getAdapter()).notifyDataSetChanged();
+                    voiceSp.setSelection(sel);
+                });
+            }
+        });
+
         Button save = new Button(this);
         save.setText("Simpan semua");
         save.setOnClickListener(v -> {
             sp.edit()
                     .putString("block", block.getText().toString().trim())
                     .putString("btonly", btOnly.isChecked() ? "1" : "")
+                    .putString("clock", clockCb.isChecked() ? "1" : "")
+                    .putString("clocktimes", clockEdit.getText().toString().trim())
+                    .putString("summary", summaryCb.isChecked() ? "1" : "")
+                    .putString("summarytime", summaryEdit.getText().toString().trim())
+                    .putString("summaryLast", "")
+                    .putString("voice", voiceSp.getSelectedItemPosition() == 0 ? ""
+                            : voiceMap.containsKey(voiceSp.getSelectedItem().toString())
+                            ? voiceMap.get(voiceSp.getSelectedItem().toString()).getName() : "")
                     .apply();
             Toast.makeText(this, "Disimpan", Toast.LENGTH_SHORT).show();
         });
@@ -80,6 +182,15 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         update();
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (pickerTts != null) {
+            pickerTts.stop();
+            pickerTts.shutdown();
+        }
+        super.onDestroy();
     }
 
     private void update() {
