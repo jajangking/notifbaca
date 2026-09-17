@@ -29,7 +29,9 @@ public class MainActivity extends Activity {
     private CheckBox summaryCb;
     private EditText summaryEdit;
     private Spinner voiceSp;
+    private CheckBox voiceAll;
     private TextToSpeech pickerTts;
+    private SharedPreferences sp;
     private final java.util.List<String> voiceNames = new java.util.ArrayList<>();
     private final java.util.Map<String, Voice> voiceMap = new java.util.HashMap<>();
 
@@ -57,7 +59,7 @@ public class MainActivity extends Activity {
         block.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
         root.addView(block);
 
-        SharedPreferences sp = getSharedPreferences("cfg", MODE_PRIVATE);
+        sp = getSharedPreferences("cfg", MODE_PRIVATE);
         block.setText(sp.getString("block", ""));
 
         btOnly = new CheckBox(this);
@@ -92,6 +94,12 @@ public class MainActivity extends Activity {
         lblVoice.setText("Suara TTS:");
         root.addView(lblVoice);
 
+        voiceAll = new CheckBox(this);
+        voiceAll.setText("Tampilkan semua bahasa (banyak)");
+        voiceAll.setChecked(false);
+        voiceAll.setOnCheckedChangeListener((btn, on) -> refreshVoices());
+        root.addView(voiceAll);
+
         voiceNames.add("Automatis (default)");
         voiceSp = new Spinner(this);
         ArrayAdapter<String> va = new ArrayAdapter<>(this,
@@ -123,29 +131,7 @@ public class MainActivity extends Activity {
 
         pickerTts = new TextToSpeech(this, status -> {
             if (status == TextToSpeech.SUCCESS) {
-                final java.util.Set<Voice> vs = pickerTts.getVoices();
-                runOnUiThread(() -> {
-                    if (vs == null) return;
-                    voiceNames.clear();
-                    voiceNames.add("Automatis (default)");
-                    voiceMap.clear();
-                    String savedVoice = sp.getString("voice", "");
-                    int sel = 0;
-                    int idx = 1;
-                    for (Voice v : vs) {
-                        if (v == null || v.getName() == null) continue;
-                        java.util.Set<String> feats = v.getFeatures();
-                        String label = v.getName();
-                        if (feats != null && feats.contains("genderMale")) label += " (pria)";
-                        if (feats != null && feats.contains("genderFemale")) label += " (wanita)";
-                        voiceNames.add(label);
-                        voiceMap.put(label, v);
-                        if (savedVoice.equals(v.getName())) sel = idx;
-                        idx++;
-                    }
-                    ((ArrayAdapter) voiceSp.getAdapter()).notifyDataSetChanged();
-                    voiceSp.setSelection(sel);
-                });
+                runOnUiThread(this::refreshVoices);
             }
         });
 
@@ -182,6 +168,41 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         update();
+    }
+
+    private void refreshVoices() {
+        if (pickerTts == null) return;
+        java.util.Set<Voice> vs = null;
+        try {
+            vs = pickerTts.getVoices();
+        } catch (Exception e) {
+            Log.w("NotifBaca", "getVoices gagal", e);
+        }
+        if (vs == null) return;
+        boolean all = voiceAll.isChecked();
+        voiceNames.clear();
+        voiceNames.add("Automatis (default)");
+        voiceMap.clear();
+        String savedVoice = sp.getString("voice", "");
+        int sel = 0;
+        int idx = 1;
+        for (Voice v : vs) {
+            if (v == null || v.getName() == null) continue;
+            java.util.Locale l = v.getLocale();
+            boolean idLang = l != null && ("id".equalsIgnoreCase(l.getLanguage())
+                    || "in".equalsIgnoreCase(l.getLanguage()));
+            if (!all && !idLang) continue;
+            java.util.Set<String> feats = v.getFeatures();
+            String label = v.getName();
+            if (feats != null && feats.contains("genderMale")) label += " (pria)";
+            if (feats != null && feats.contains("genderFemale")) label += " (wanita)";
+            voiceNames.add(label);
+            voiceMap.put(label, v);
+            if (savedVoice.equals(v.getName())) sel = idx;
+            idx++;
+        }
+        ((ArrayAdapter) voiceSp.getAdapter()).notifyDataSetChanged();
+        voiceSp.setSelection(Math.min(sel, voiceNames.size() - 1));
     }
 
     @Override

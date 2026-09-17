@@ -17,6 +17,7 @@ import android.os.HandlerThread;
 import android.os.PowerManager;
 import android.os.Process;
 import android.speech.tts.TextToSpeech;
+import android.speech.tts.UtteranceProgressListener;
 import android.speech.tts.Voice;
 import android.util.Log;
 
@@ -46,6 +47,11 @@ public class NLS extends NotificationListenerService {
     private int hbCount;
     private volatile boolean destroyed;
     private long lastClockMin = -1;
+    private static final int MAX_SPEAK_QUEUE = 10;
+    private final java.util.concurrent.ConcurrentLinkedQueue<String> speakQueue =
+            new java.util.concurrent.ConcurrentLinkedQueue<>();
+    private volatile boolean ttsReady;
+    private volatile boolean ttsSpeaking;
     private final Set<String> recent = new HashSet<>();
     private final java.util.List<String> summaryLog = new java.util.ArrayList<>();
 
@@ -110,6 +116,29 @@ public class NLS extends NotificationListenerService {
                     tts.setLanguage(Locale.getDefault());
                 }
                 tts.setAudioAttributes(ttsAudio);
+                tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+                    @Override
+                    public void onStart(String utteranceId) {
+                    }
+
+                    @Override
+                    public void onDone(String utteranceId) {
+                        speakDone();
+                    }
+
+                    @Override
+                    @Deprecated
+                    public void onError(String utteranceId) {
+                        speakDone();
+                    }
+
+                    @Override
+                    public void onError(String utteranceId, int errorCode) {
+                        speakDone();
+                    }
+                });
+                ttsReady = true;
+                drainQueue();
             }
         });
         startMinuteTicker();
@@ -335,16 +364,34 @@ public class NLS extends NotificationListenerService {
     }
 
     private void speakSimple(String text) {
-        if (destroyed || tts == null) return;
-        if (wl != null && !wl.isHeld()) wl.acquire(8000);
-        String id = "n" + System.currentTimeMillis();
+        if (destroyed || text == null || text.isEmpty()) return;
+        enqueue(text);
+        if (ttsReady) drainQueue();
+    }
+
+    private void enqueue(String text) {
+        speakQueue.add(text);
+        while (speakQueue.size() > MAX_SPEAK_QUEUE) speakQueue.poll();
+    }
+
+    private void drainQueue() {
+        if (destroyed || !ttsReady || ttsSpeaking) return;
+        final String text = speakQueue.poll();
+        if (text == null) return;
+        ttsSpeaking = true;
+        if (wl != null && !wl.isHeld()) wl.acquire(10000);
         try {
             ttsHandler.post(() -> {
                 int f = AudioManager.AUDIOFOCUS_REQUEST_FAILED;
                 if (am != null && afr != null) {
                     f = am.requestAudioFocus(afr);
                 }
-                tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, id);
+                try {
+                    tts.speak(text, TextToSpeech.QUEUE_ADD, null, "n" + System.currentTimeMillis());
+                } catch (Exception e) {
+                    Log.e(TAG, "tts gagal", e);
+                    speakDone();
+                }
                 if (f == AudioManager.AUDIOFOCUS_REQUEST_GRANTED && am != null) {
                     mainHandler.postDelayed(() -> {
                         if (am != null) am.abandonAudioFocusRequest(afr);
@@ -353,7 +400,15 @@ public class NLS extends NotificationListenerService {
             });
         } catch (Exception e) {
             Log.e(TAG, "tts gagal", e);
+            ttsSpeaking = false;
         }
+    }
+
+    private void speakDone() {
+        mainHandler.post(() -> {
+            ttsSpeaking = false;
+            drainQueue();
+        });
     }
 
     @Override
