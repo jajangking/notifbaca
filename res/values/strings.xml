@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="acc_desc">Dipakai untuk mengirim balasan suara ke WhatsApp/Telegram (fitur eksperimental). Data hanya diproses saat layar chat terkait terbuka.</string>
+</resources>

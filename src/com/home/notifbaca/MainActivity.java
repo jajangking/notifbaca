@@ -31,6 +31,8 @@ public class MainActivity extends Activity {
     private Spinner voiceSp;
     private CheckBox voiceAll;
     private CheckBox muteCb;
+    private CheckBox replyCb;
+    private TextView replyStatus;
     private TextToSpeech pickerTts;
     private SharedPreferences sp;
     private final java.util.List<String> voiceNames = new java.util.ArrayList<>();
@@ -169,8 +171,37 @@ public class MainActivity extends Activity {
                 startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)));
         root.addView(grant);
 
+        replyCb = new CheckBox(this);
+        replyCb.setText("Balas balik via suara (EKSPERIMENTAL)");
+        replyCb.setChecked("1".equals(sp.getString("reply", "")));
+        replyCb.setOnCheckedChangeListener((b, on) -> {
+            sp.edit().putString("reply", on ? "1" : "").apply();
+            if (on) {
+                updateReplyStatus();
+                if (Build.VERSION.SDK_INT >= 23
+                        && checkSelfPermission("android.permission.RECORD_AUDIO")
+                        != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                    requestPermissions(new String[]{"android.permission.RECORD_AUDIO"}, 2);
+                }
+            } else {
+                replyStatus.setText("");
+            }
+        });
+        root.addView(replyCb);
+
+        Button accBtn = new Button(this);
+        accBtn.setText("Aktifkan / cek aksesibilitas (untuk balas)");
+        accBtn.setOnClickListener(v ->
+                startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
+        root.addView(accBtn);
+
+        replyStatus = new TextView(this);
+        replyStatus.setTextSize(14);
+        root.addView(replyStatus);
+
         setContentView(root);
         update();
+        updateReplyStatus();
     }
 
     @Override
@@ -231,5 +262,18 @@ public class MainActivity extends Activity {
         status.setText(on
                 ? "Status: AKTIF — notifikasi bakal dibacakan"
                 : "Status: BELUM aktif — izinkan akses notifikasi dulu");
+        updateReplyStatus();
+    }
+
+    private void updateReplyStatus() {
+        if (replyStatus == null) return;
+        boolean rep = "1".equals(sp.getString("reply", ""));
+        if (!rep) {
+            replyStatus.setText("");
+            return;
+        }
+        replyStatus.setText(ReplyAccessibilityService.isOnline()
+                ? "Balas suara SIAP (aksesibilitas aktif)."
+                : "Balas suara: aktifkan NotifBaca di Setelan Aksesibilitas.");
     }
 }
