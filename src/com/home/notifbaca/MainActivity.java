@@ -30,6 +30,7 @@ public class MainActivity extends Activity {
     private EditText summaryEdit;
     private Spinner voiceSp;
     private CheckBox voiceAll;
+    private CheckBox muteCb;
     private TextToSpeech pickerTts;
     private SharedPreferences sp;
     private final java.util.List<String> voiceNames = new java.util.ArrayList<>();
@@ -69,6 +70,14 @@ public class MainActivity extends Activity {
             sp.edit().putString("btonly", on ? "1" : "").apply();
         });
         root.addView(btOnly);
+
+        muteCb = new CheckBox(this);
+        muteCb.setText("Jeda sementara (dibisukan)");
+        muteCb.setChecked("1".equals(sp.getString("muted", "")));
+        muteCb.setOnCheckedChangeListener((btn, on) -> {
+            sp.edit().putString("muted", on ? "1" : "").apply();
+        });
+        root.addView(muteCb);
 
         clockCb = new CheckBox(this);
         clockCb.setText("Umumkan jam di jadwal berikut");

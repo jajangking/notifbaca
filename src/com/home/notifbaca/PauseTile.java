@@ -5,6 +5,7 @@ import android.graphics.drawable.Icon;
 import android.service.quicksettings.Tile;
 import android.service.quicksettings.TileService;
 import android.util.Log;
+import android.widget.Toast;
 
 public class PauseTile extends TileService {
     private static final String PREF = "cfg";
@@ -12,12 +13,12 @@ public class PauseTile extends TileService {
 
     @Override
     public void onTileAdded() {
-        updateTileState();
+        refresh();
     }
 
     @Override
     public void onStartListening() {
-        updateTileState();
+        refresh();
     }
 
     @Override
@@ -25,27 +26,36 @@ public class PauseTile extends TileService {
         SharedPreferences sp = getSharedPreferences(PREF, MODE_PRIVATE);
         boolean muted = "1".equals(sp.getString(KEY_MUTED, ""));
         sp.edit().putString(KEY_MUTED, muted ? "" : "1").apply();
-        Log.i("NotifBaca", "tile toggle -> " + (muted ? "aktif" : "jeda"));
-        updateTileState();
+        boolean nowMuted = !muted;
+        Log.i("NotifBaca", "tile toggle -> " + (nowMuted ? "dibisukan" : "aktif"));
+        try {
+            Toast.makeText(this, nowMuted
+                    ? "NotifBaca dibisukan - notif nggak dibacakan"
+                    : "NotifBaca aktif - notif bakal dibacakan",
+                    Toast.LENGTH_SHORT).show();
+        } catch (Exception e) {
+            Log.w("NotifBaca", "toast gagal", e);
+        }
+        refresh();
     }
 
-    private void updateTileState() {
+    private void refresh() {
         Tile t = getQsTile();
         if (t == null) return;
         boolean muted = "1".equals(getSharedPreferences(PREF, MODE_PRIVATE)
                 .getString(KEY_MUTED, ""));
         if (muted) {
             t.setState(Tile.STATE_INACTIVE);
-            t.setLabel("Jeda");
-            t.setSubtitle("Notif dibisukan");
+            t.setLabel("Dibisukan");
+            t.setSubtitle("Tekan buat baca lagi");
             t.setIcon(Icon.createWithResource(this, android.R.drawable.ic_lock_silent_mode));
-            t.setContentDescription("NotifBaca dijeda");
+            t.setContentDescription("NotifBaca sedang dibisukan");
         } else {
             t.setState(Tile.STATE_ACTIVE);
-            t.setLabel("Baca");
-            t.setSubtitle("Notif aktif");
+            t.setLabel("Aktif Membaca");
+            t.setSubtitle("Tekan buat jeda");
             t.setIcon(Icon.createWithResource(this, android.R.drawable.ic_media_play));
-            t.setContentDescription("NotifBaca aktif");
+            t.setContentDescription("NotifBaca aktif membacakan");
         }
         t.updateTile();
     }

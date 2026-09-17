@@ -403,7 +403,6 @@ public class NLS extends NotificationListenerService {
         }
 
         String utter = "Notifikasi dari " + app + ". " + title + ". " + text;
-        Log.i(TAG, (catchUp ? "KETINGGALAN " : "SPEAKING ") + pkg + ": " + utter);
 
         speakSimple(utter);
     }
@@ -414,6 +413,7 @@ public class NLS extends NotificationListenerService {
             Log.i(TAG, "muted, skip: " + text);
             return;
         }
+        Log.i(TAG, "SPEAKING: " + text);
         enqueue(text);
         if (ttsReady) drainQueue();
     }
