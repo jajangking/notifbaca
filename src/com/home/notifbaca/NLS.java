@@ -35,6 +35,7 @@ public class NLS extends NotificationListenerService {
     private static final String KEY_SUMMARY = "summary";
     private static final String KEY_SUMMARYTIME = "summarytime";
     private static final String KEY_SUMMARYLAST = "summaryLast";
+    private static final String KEY_SPOKEN = "spoken";
 
     private TextToSpeech tts;
     private PowerManager.WakeLock wl;
@@ -75,6 +76,7 @@ public class NLS extends NotificationListenerService {
     public void onCreate() {
         super.onCreate();
         Log.i(TAG, "onCreate");
+        loadSpoken();
         initChannel();
         startFg();
         PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
@@ -299,10 +301,48 @@ public class NLS extends NotificationListenerService {
         return false;
     }
 
+    private void loadSpoken() {
+        String s = getSharedPreferences(PREF, MODE_PRIVATE).getString(KEY_SPOKEN, "");
+        if (s == null) return;
+        for (String k : s.split(",")) {
+            String kk = k.trim();
+            if (!kk.isEmpty()) recent.add(kk);
+        }
+    }
+
+    private void markSpoken(String key) {
+        String s = getSharedPreferences(PREF, MODE_PRIVATE).getString(KEY_SPOKEN, "");
+        java.util.List<String> spoken = new java.util.ArrayList<>();
+        if (s != null) {
+            for (String k : s.split(",")) {
+                if (!k.trim().isEmpty()) spoken.add(k.trim());
+            }
+        }
+        spoken.add(key);
+        while (spoken.size() > 60) spoken.remove(0);
+        StringBuilder sb = new StringBuilder();
+        for (String k : spoken) {
+            if (sb.length() > 0) sb.append(',');
+            sb.append(k);
+        }
+        getSharedPreferences(PREF, MODE_PRIVATE)
+                .edit().putString(KEY_SPOKEN, sb.toString()).apply();
+    }
+
     @Override
     public void onListenerConnected() {
         Log.i(TAG, "listener connected");
         startFg();
+        loadSpoken();
+        try {
+            StatusBarNotification[] all = getActiveNotifications();
+            if (all != null) {
+                Log.i(TAG, "rescan aktif " + all.length);
+                for (StatusBarNotification sbn : all) consider(sbn, true);
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "rescan gagal", e);
+        }
     }
 
     public void onListenerDisconnected() {
@@ -316,6 +356,10 @@ public class NLS extends NotificationListenerService {
     @Override
     public void onNotificationPosted(StatusBarNotification sbn) {
         Log.i(TAG, "GOT " + sbn.getPackageName() + " ongoing=" + sbn.isOngoing());
+        consider(sbn, false);
+    }
+
+    private void consider(StatusBarNotification sbn, boolean catchUp) {
         if (sbn.isOngoing()) return;
         String pkg = sbn.getPackageName();
         if (noise(pkg)) return;
@@ -335,6 +379,7 @@ public class NLS extends NotificationListenerService {
         if (recent.contains(key)) return;
         if (recent.size() > 300) recent.clear();
         recent.add(key);
+        markSpoken(key);
 
         SharedPreferences sp = getSharedPreferences(PREF, MODE_PRIVATE);
         String[] blocked = sp.getString(KEY_BLOCK, "").split(",");
@@ -358,13 +403,17 @@ public class NLS extends NotificationListenerService {
         }
 
         String utter = "Notifikasi dari " + app + ". " + title + ". " + text;
-        Log.i(TAG, "SPEAKING " + pkg + ": " + utter);
+        Log.i(TAG, (catchUp ? "KETINGGALAN " : "SPEAKING ") + pkg + ": " + utter);
 
         speakSimple(utter);
     }
 
     private void speakSimple(String text) {
         if (destroyed || text == null || text.isEmpty()) return;
+        if ("1".equals(getSharedPreferences(PREF, MODE_PRIVATE).getString("muted", ""))) {
+            Log.i(TAG, "muted, skip: " + text);
+            return;
+        }
         enqueue(text);
         if (ttsReady) drainQueue();
     }
