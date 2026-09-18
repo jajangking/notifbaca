@@ -6,7 +6,6 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.content.Context;
-import android.content.Intent;
 import android.content.SharedPreferences;
 import android.media.AudioAttributes;
 import android.media.AudioDeviceInfo;
@@ -20,9 +19,6 @@ import android.os.Process;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.UtteranceProgressListener;
 import android.speech.tts.Voice;
-import android.speech.SpeechRecognizer;
-import android.speech.RecognitionListener;
-import android.speech.RecognizerIntent;
 import android.util.Log;
 
 import java.util.HashSet;
@@ -40,7 +36,6 @@ public class NLS extends NotificationListenerService {
     private static final String KEY_SUMMARYTIME = "summarytime";
     private static final String KEY_SUMMARYLAST = "summaryLast";
     private static final String KEY_SPOKEN = "spoken";
-    private static final String KEY_REPLY = "reply";
 
     private TextToSpeech tts;
     private PowerManager.WakeLock wl;
@@ -77,24 +72,7 @@ public class NLS extends NotificationListenerService {
         NOISE.add("com.facemoji.lite.transsion");
     }
 
-    private static final Set<String> REPLY_PKGS = new HashSet<>();
-
-    static {
-        REPLY_PKGS.add("com.whatsapp");
-        REPLY_PKGS.add("com.whatsapp.w4b");
-        REPLY_PKGS.add("org.telegram.messenger");
-    }
-
-    private SpeechRecognizer sr;
-    private HandlerThread sttThread;
-    private Handler sttHandler;
-    private volatile boolean replyActive;
-    private int replyMode;
-    private String pendingText;
-    private StatusBarNotification replySbn;
-    private long replyStartMs;
-
-    @Override
+@Override
     public void onCreate() {
         super.onCreate();
         Log.i(TAG, "onCreate");
@@ -107,9 +85,6 @@ public class NLS extends NotificationListenerService {
         ttsThread = new HandlerThread("tts");
         ttsThread.start();
         ttsHandler = new Handler(ttsThread.getLooper());
-        sttThread = new HandlerThread("stt");
-        sttThread.start();
-        sttHandler = new Handler(sttThread.getLooper());
         mainHandler = new Handler(android.os.Looper.getMainLooper());
         startHeartbeat();
         am = (AudioManager) getSystemService(AUDIO_SERVICE);
@@ -430,176 +405,6 @@ public class NLS extends NotificationListenerService {
         String utter = "Notifikasi dari " + app + ". " + title + ". " + text;
 
         speakSimple(utter);
-        maybeOfferReply(sbn, app);
-    }
-
-    private void maybeOfferReply(StatusBarNotification sbn, String app) {
-        if (replyActive) return;
-        if (!"1".equals(getSharedPreferences(PREF, MODE_PRIVATE)
-                .getString(KEY_REPLY, ""))) return;
-        SharedPreferences sp = getSharedPreferences(PREF, MODE_PRIVATE);
-        String[] blocked = sp.getString(KEY_BLOCK, "").split(",");
-        for (String b : blocked) {
-            if (b.trim().equalsIgnoreCase(sbn.getPackageName())) return;
-        }
-        if ("1".equals(sp.getString("btonly", ""))
-                || "1".equals(sp.getString("muted", ""))) {
-            if ("1".equals(sp.getString("btonly", "")) && !btActive()) return;
-        }
-        if (sbn.getNotification() == null || sbn.getNotification().contentIntent == null) return;
-        if (!REPLY_PKGS.contains(sbn.getPackageName())) return;
-        if (!ReplyAccessibilityService.isOnline()) {
-            Log.i(TAG, "reply dilewati: aksesibilitas belum aktif");
-            return;
-        }
-        if (checkSelfPermission("android.permission.RECORD_AUDIO")
-                != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            Log.i(TAG, "reply dilewati: izin mikrofon belum ada");
-            return;
-        }
-        replySbn = sbn;
-        replyMode = 0;
-        speakSimple("Katakan pesan balasan untuk " + app + ", atau katakan tidak.");
-        startListeningSTT();
-    }
-
-    private void startListeningSTT() {
-        if (sr == null) {
-            try {
-                sr = SpeechRecognizer.createSpeechRecognizer(this);
-            } catch (Exception e) {
-                Log.e(TAG, "STT gagal dibuat", e);
-                replyDone("Tidak bisa memakai pengenalan suara.");
-                return;
-            }
-        }
-        sr.setRecognitionListener(listener);
-        sttHandler.post(() -> {
-            try {
-                if (sr == null) return;
-                sr.cancel();
-                Intent i = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
-                i.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
-                        RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
-                i.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "id-ID");
-                i.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5);
-                replyStartMs = System.currentTimeMillis();
-                sr.startListening(i);
-                mainHandler.postDelayed(sttTimeout, 7000);
-            } catch (Exception e) {
-                Log.e(TAG, "STT start gagal", e);
-                replyDone("Pengenalan suara gagal.");
-            }
-        });
-    }
-
-    private final Runnable sttTimeout = new Runnable() {
-        @Override
-        public void run() {
-            if (replyActive && System.currentTimeMillis() - replyStartMs >= 7000) {
-                Log.i(TAG, "STT timeout");
-                replyDone("Tidak ada jawaban, dibatalkan.");
-            }
-        }
-    };
-
-    private final RecognitionListener listener =
-            new RecognitionListener() {
-                @Override public void onReadyForSpeech(Bundle p) { }
-                @Override public void onBeginningOfSpeech() { }
-                @Override public void onRmsChanged(float f) { }
-                @Override public void onBufferReceived(byte[] b) { }
-                @Override public void onEndOfSpeech() { }
-                @Override public void onEvent(int e, Bundle b) { }
-                @Override public void onPartialResults(Bundle b) { }
-                @Override public void onResults(Bundle b) {
-                    if (!replyActive) return;
-                    mainHandler.removeCallbacks(sttTimeout);
-                    String said = "";
-                    java.util.ArrayList<String> r = b.getStringArrayList(
-                            RecognizerIntent.EXTRA_RESULTS);
-                    if (r != null && !r.isEmpty()) said = r.get(0);
-                    if (said != null) said = said.trim();
-                    handleSpeech(said);
-                }
-                @Override public void onError(int code) {
-                    if (!replyActive) return;
-                    mainHandler.removeCallbacks(sttTimeout);
-                    Log.e(TAG, "STT error " + code);
-                    replyDone("Pengenalan suara gagal.");
-                }
-            };
-
-    private void handleSpeech(String said) {
-        if (replyMode == 0) {
-            if (said == null || said.isEmpty() || isNo(said)) {
-                replyDone("Baik, tidak dibalas.");
-                return;
-            }
-            pendingText = said;
-            replyMode = 1;
-            speakSimple("Pesan: " + said + ". Kirim?");
-            startListeningSTT();
-        } else {
-            if (isYes(said)) {
-                sendReply();
-            } else {
-                replyDone("Dibatalkan, tidak dikirim.");
-            }
-        }
-    }
-
-    private boolean isNo(String s) {
-        String t = s.toLowerCase();
-        for (String k : new String[]{"tidak", "nggak", "enggak", "gak", "kaga",
-                "skip", "jangan", "batal", "stop"}) {
-            if (t.contains(k)) return true;
-        }
-        return false;
-    }
-
-    private boolean isYes(String s) {
-        if (s == null) return false;
-        String t = s.toLowerCase();
-        for (String k : new String[]{"ya", "iya", "kirim", "oke", "ok", "send"}) {
-            if (t.contains(k)) return true;
-        }
-        return false;
-    }
-
-    private void sendReply() {
-        if (replySbn == null || pendingText == null) {
-            replyDone("Gagal mengirim.");
-            return;
-        }
-        speakSimple("Mengirim pesan.");
-        try {
-            replySbn.getNotification().contentIntent.send();
-        } catch (Exception e) {
-            Log.e(TAG, "buka chat gagal", e);
-            replyDone("Gagal membuka aplikasi chat.");
-            return;
-        }
-        final String toSend = pendingText;
-        mainHandler.postDelayed(() -> {
-            try {
-                boolean ok = ReplyAccessibilityService.typeAndSend(toSend, 8000);
-                Log.i(TAG, "a11y kirim result=" + ok);
-                replyDone(ok ? "Pesan terkirim." : "Gagal mengirim pesan.");
-            } catch (Exception e) {
-                Log.e(TAG, "a11y kirim error", e);
-                replyDone("Gagal mengirim pesan.");
-            }
-        }, 1800);
-    }
-
-    private void replyDone(String msg) {
-        replyActive = false;
-        replyMode = 0;
-        pendingText = null;
-        replySbn = null;
-        mainHandler.removeCallbacks(sttTimeout);
-        if (msg != null && !msg.isEmpty()) speakSimple(msg);
     }
 
     private void speakSimple(String text) {
@@ -659,19 +464,6 @@ public class NLS extends NotificationListenerService {
     public void onDestroy() {
         Log.e(TAG, "onDestroy");
         destroyed = true;
-        replyActive = false;
-        if (sttThread != null) {
-            sttThread.quitSafely();
-        }
-        if (sr != null) {
-            try {
-                sr.cancel();
-                sr.destroy();
-            } catch (Exception e) {
-                Log.w(TAG, "sr destroy gagal", e);
-            }
-            sr = null;
-        }
         if (ttsThread != null) ttsThread.quitSafely();
         if (tts != null) {
             tts.stop();

@@ -18,6 +18,7 @@ apksigner sign --ks keystore/nb.keystore --ks-key-alias <alias> --ks-pass pass:<
 - `inject.py` hanya menyisipkan `dexout/classes.dex` ke salinan `base.apk` → `unsigned.apk`.
 - `apksigner sign` dengan `--out` menghasilkan byproduct `<out>.idsig` — itu normal, bisa diabaikan.
 - Sumber yang diedit: `AndroidManifest.xml`, `src/com/home/notifbaca/*.java`, `res/` (ikon mipmap). Semua `.apk`, `*.idsig`, `dexout/`, `obj/`, `base.apk` adalah artefak build-gitignored — regenerate, jangan diedit/commit.
+- Kalau `obj/` dihapus total, buat dulu `mkdir -p obj` sebelum `aapt2 compile --dir res -o obj/res.zip`.
 
 ## Keystore (kritis)
 
