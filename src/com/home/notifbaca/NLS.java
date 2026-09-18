@@ -89,7 +89,7 @@ public class NLS extends NotificationListenerService {
         startHeartbeat();
         am = (AudioManager) getSystemService(AUDIO_SERVICE);
         ttsAudio = new AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                 .build();
         afr = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
