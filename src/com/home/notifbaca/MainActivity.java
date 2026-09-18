@@ -169,8 +169,15 @@ public class MainActivity extends Activity {
                 startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)));
         root.addView(grant);
 
+        Button privacy = new Button(this);
+        privacy.setText("Tentang & kebijakan privasi");
+        privacy.setOnClickListener(v ->
+                startActivity(new Intent(this, PrivacyActivity.class)));
+        root.addView(privacy);
+
         setContentView(root);
         update();
+        maybeShowIntro();
     }
 
     @Override
@@ -231,5 +238,25 @@ public class MainActivity extends Activity {
         status.setText(on
                 ? "Status: AKTIF — notifikasi bakal dibacakan"
                 : "Status: BELUM aktif — izinkan akses notifikasi dulu");
+    }
+
+    private void maybeShowIntro() {
+        if ("1".equals(sp.getString("intro", ""))) return;
+        sp.edit().putString("intro", "1").apply();
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("Cara kerja NotifBaca")
+                .setMessage(
+                        "Kita baca notifikasi yang masuk dan membacakannya dengan suara "
+                        + "lewat TTS, ideal buat dipakai di jalan lewat TWS.\n\n"
+                        + "Supaya berfungsi, aplikasi butuh izin berikut:\n"
+                        + "1. Akses notifikasi — biar tahu notif masuk. Isinya HANYA dibacakan "
+                        + "lokal, tidak dikirim ke mana pun.\n"
+                        + "2. Izin notifikasi sistem (Android 13+) — untuk menjaga layanan "
+                        + "tetap aktif.\n\n"
+                        + "Pengaturan: akses notifikasi dibuka lewat \"Buka pengaturan akses "
+                        + "notifikasi\" di atas. Kamu juga bisa blokir aplikasi tertentu, "
+                        + "jeda, atau baca hanya saat Bluetooth aktif.")
+                .setPositiveButton("Mengerti", (d, w) -> d.dismiss())
+                .show();
     }
 }

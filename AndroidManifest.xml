@@ -23,6 +23,8 @@
             </intent-filter>
         </activity>
 
+        <activity android:name=".PrivacyActivity" android:exported="false"/>
+
         <service
             android:name=".NLS"
             android:exported="true"
