@@ -29,6 +29,7 @@ apksigner sign --ks keystore/nb.keystore --ks-key-alias <alias> --ks-pass pass:<
 
 - `MainActivity` → UI hubung-aktifkan NotificationListenerService, blokir package (SharedPreferences `cfg`/`block`, pisah koma), toggle "hanya baca saat BT aktif" (`cfg`/`btonly`).
 - `NLS` → NotificationListenerService. Filter noise statis (`NOISE` + awalan `com.transsion.`/`android.`), dedupe pakai `recent`, baca via TTS — voice dari pref `cfg`/`voice` (dipilih di UI, bisa network voice Google), fallback `Locale.getDefault()`.
+- Volume TTS diatur pref `cfg`/`volume` (int 0–100; 0 = otomatis/ikut volume media). TTS main di stream media (`USAGE_MEDIA`); kalau `volume` > 0, `NLS` menaikkan sementara volume stream media ke % itu saat bicara lalu mengembalikannya (restore di onDone/error, fallback 30 detik, dan onDestroy). Jangan ubah pola ini tanpa mikirin konsekuensi volume media.
 - Watchdog di `NLS` sengaja membunuh proses sendiri setelah 4 kali gagal berturut-turut mengecek notif aktif — ini self-heal biar sistem rebind listener. JANGAN "perbaiki" sebagai bug.
 - Foreground service id=1 dipakai watchdog sebagai penanda hidup — jangan ganti id/channel (`CHANNEL="run"`) kalau tidak menyesuaikan watchdog.
 - Logcat: `adb logcat -s NotifBaca` (TAG `NotifBaca`). Heartbeat tiap 15s, watch-check tiap 12s.

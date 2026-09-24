@@ -45,6 +45,8 @@ public class NLS extends NotificationListenerService {
     private AudioManager am;
     private AudioAttributes ttsAudio;
     private AudioFocusRequest afr;
+    private int savedVol = -1;
+    private Runnable volFallback;
     private int hbCount;
     private volatile boolean destroyed;
     private long lastClockMin = -1;
@@ -88,8 +90,10 @@ public class NLS extends NotificationListenerService {
         mainHandler = new Handler(android.os.Looper.getMainLooper());
         startHeartbeat();
         am = (AudioManager) getSystemService(AUDIO_SERVICE);
+        // USAGE_MEDIA: TTS dijamin main di stream media, jadi volume-nya bisa
+        // diatur (pref cfg/volume) dan konsisten saat musik TWS lagi kencang.
         ttsAudio = new AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+                .setUsage(AudioAttributes.USAGE_MEDIA)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                 .build();
         afr = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
@@ -435,6 +439,7 @@ public class NLS extends NotificationListenerService {
                 if (am != null && afr != null) {
                     f = am.requestAudioFocus(afr);
                 }
+                applyVolume();
                 try {
                     tts.speak(text, TextToSpeech.QUEUE_ADD, null, "n" + System.currentTimeMillis());
                 } catch (Exception e) {
@@ -453,9 +458,46 @@ public class NLS extends NotificationListenerService {
         }
     }
 
+    // Naikkan sementara volume stream media ke persen yang dipilih (pref cfg/volume,
+    // 0 = otomatis / tidak diubah), lalu kembalikan setelah selesai bicara.
+    private void applyVolume() {
+        if (am == null) return;
+        int vol = getSharedPreferences(PREF, MODE_PRIVATE).getInt("volume", 0);
+        if (vol <= 0) return;
+        int max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
+        if (max <= 0) return;
+        savedVol = am.getStreamVolume(AudioManager.STREAM_MUSIC);
+        int target = Math.round(max * vol / 100f);
+        try {
+            am.setStreamVolume(AudioManager.STREAM_MUSIC, Math.max(1, Math.min(target, max)), 0);
+        } catch (Exception e) {
+            Log.e(TAG, "set volume gagal", e);
+            savedVol = -1;
+            return;
+        }
+        // Jaring pengaman: kalau onDone tidak pernah datang, balikin volume maks 30 detik.
+        volFallback = this::restoreVolume;
+        mainHandler.postDelayed(volFallback, 30000);
+    }
+
+    private void restoreVolume() {
+        if (volFallback != null) {
+            mainHandler.removeCallbacks(volFallback);
+            volFallback = null;
+        }
+        if (am == null || savedVol < 0) return;
+        try {
+            am.setStreamVolume(AudioManager.STREAM_MUSIC, savedVol, 0);
+        } catch (Exception e) {
+            Log.e(TAG, "restore volume gagal", e);
+        }
+        savedVol = -1;
+    }
+
     private void speakDone() {
         mainHandler.post(() -> {
             ttsSpeaking = false;
+            restoreVolume();
             drainQueue();
         });
     }
@@ -463,6 +505,7 @@ public class NLS extends NotificationListenerService {
     @Override
     public void onDestroy() {
         Log.e(TAG, "onDestroy");
+        restoreVolume();
         destroyed = true;
         if (ttsThread != null) ttsThread.quitSafely();
         if (tts != null) {

@@ -4,10 +4,12 @@ import android.app.Activity;
 import android.app.NotificationManager;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.media.AudioManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
 import android.speech.tts.TextToSpeech;
+import android.speech.tts.UtteranceProgressListener;
 import android.speech.tts.Voice;
 import android.text.InputType;
 import android.util.Log;
@@ -16,6 +18,7 @@ import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.SeekBar;
 import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -31,6 +34,9 @@ public class MainActivity extends Activity {
     private Spinner voiceSp;
     private CheckBox voiceAll;
     private CheckBox muteCb;
+    private SeekBar volBar;
+    private TextView volLabel;
+    private int previewSavedVol = -1;
     private TextToSpeech pickerTts;
     private SharedPreferences sp;
     private final java.util.List<String> voiceNames = new java.util.ArrayList<>();
@@ -124,6 +130,29 @@ public class MainActivity extends Activity {
                 Toast.makeText(this, "TTS belum siap", Toast.LENGTH_SHORT).show();
                 return;
             }
+            restorePreviewVol();
+            applyPreviewVol();
+            pickerTts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+                @Override
+                public void onStart(String utteranceId) {
+                }
+
+                @Override
+                public void onDone(String utteranceId) {
+                    restorePreviewVol();
+                }
+
+                @Override
+                @Deprecated
+                public void onError(String utteranceId) {
+                    restorePreviewVol();
+                }
+
+                @Override
+                public void onError(String utteranceId, int errorCode) {
+                    restorePreviewVol();
+                }
+            });
             String sel = voiceSp.getSelectedItem() == null ? ""
                     : voiceSp.getSelectedItem().toString();
             Voice vv = voiceMap.get(sel);
@@ -137,6 +166,34 @@ public class MainActivity extends Activity {
             pickerTts.speak("Halo, ini contoh suara yang dipilih.", TextToSpeech.QUEUE_FLUSH, null, "nbtest");
         });
         root.addView(testVoice);
+
+        TextView lblVol = new TextView(this);
+        lblVol.setText("Volume suara pembacaan:");
+        root.addView(lblVol);
+
+        volLabel = new TextView(this);
+        volLabel.setTextSize(14);
+        root.addView(volLabel);
+
+        volBar = new SeekBar(this);
+        volBar.setMax(100);
+        volBar.setProgress(sp.getInt("volume", 0));
+        volBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seek, int v, boolean fromUser) {
+                updateVolLabel(v);
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar seek) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar seek) {
+            }
+        });
+        root.addView(volBar);
+        updateVolLabel(volBar.getProgress());
 
         pickerTts = new TextToSpeech(this, status -> {
             if (status == TextToSpeech.SUCCESS) {
@@ -158,6 +215,7 @@ public class MainActivity extends Activity {
                     .putString("voice", voiceSp.getSelectedItemPosition() == 0 ? ""
                             : voiceMap.containsKey(voiceSp.getSelectedItem().toString())
                             ? voiceMap.get(voiceSp.getSelectedItem().toString()).getName() : "")
+                    .putInt("volume", volBar.getProgress())
                     .apply();
             Toast.makeText(this, "Disimpan", Toast.LENGTH_SHORT).show();
         });
@@ -221,8 +279,47 @@ public class MainActivity extends Activity {
         voiceSp.setSelection(Math.min(sel, voiceNames.size() - 1));
     }
 
+    private void updateVolLabel(int v) {
+        if (volLabel == null) return;
+        if (v == 0) {
+            volLabel.setText("0 — otomatis (ikut volume media saat ini)");
+        } else {
+            volLabel.setText("Saat membaca, volume media dinaikkan ke " + v + "% lalu dikembalikan");
+        }
+    }
+
+    // Preview volume dipakai juga pas tes suara, biar sesuai dengan yang bakal terjadi.
+    private void applyPreviewVol() {
+        AudioManager am = (AudioManager) getSystemService(AUDIO_SERVICE);
+        if (am == null || volBar == null) return;
+        int vol = volBar.getProgress();
+        if (vol <= 0) return;
+        int max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
+        if (max <= 0) return;
+        previewSavedVol = am.getStreamVolume(AudioManager.STREAM_MUSIC);
+        try {
+            am.setStreamVolume(AudioManager.STREAM_MUSIC,
+                    Math.max(1, Math.min(Math.round(max * vol / 100f), max)), 0);
+        } catch (Exception e) {
+            Log.w("NotifBaca", "set volume gagal", e);
+            previewSavedVol = -1;
+        }
+    }
+
+    private void restorePreviewVol() {
+        AudioManager am = (AudioManager) getSystemService(AUDIO_SERVICE);
+        if (am == null || previewSavedVol < 0) return;
+        try {
+            am.setStreamVolume(AudioManager.STREAM_MUSIC, previewSavedVol, 0);
+        } catch (Exception e) {
+            Log.w("NotifBaca", "restore volume gagal", e);
+        }
+        previewSavedVol = -1;
+    }
+
     @Override
     protected void onDestroy() {
+        restorePreviewVol();
         if (pickerTts != null) {
             pickerTts.stop();
             pickerTts.shutdown();
