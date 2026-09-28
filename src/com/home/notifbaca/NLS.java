@@ -366,14 +366,23 @@ public class NLS extends NotificationListenerService {
 
     @Override
     public void onNotificationPosted(StatusBarNotification sbn) {
-        Log.i(TAG, "GOT " + sbn.getPackageName() + " ongoing=" + sbn.isOngoing());
         consider(sbn, false);
     }
 
     private void consider(StatusBarNotification sbn, boolean catchUp) {
-        if (sbn.isOngoing()) return;
         String pkg = sbn.getPackageName();
-        if (noise(pkg)) return;
+        // Log ditulis setelah filter, bukan sebelum. Dulu baris "GOT" ditulis
+        // lebih dulu sehingga notif yang ongoing/noise tetap terlihat seolah
+        // dibaca, padahal dilewati.
+        if (sbn.isOngoing()) {
+            Log.i(TAG, "SKIP ongoing " + pkg);
+            return;
+        }
+        if (noise(pkg)) {
+            Log.i(TAG, "SKIP noise " + pkg);
+            return;
+        }
+        Log.i(TAG, "GOT " + pkg);
 
         String title = "";
         String text = "";
