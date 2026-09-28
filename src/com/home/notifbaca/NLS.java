@@ -95,9 +95,13 @@ public class NLS extends NotificationListenerService {
                 .setUsage(AudioAttributes.USAGE_MEDIA)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                 .build();
-        afr = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+        // GAIN_TRANSIENT, bukan MAY_DUCK. Duck cuma permintaan: app musik boleh
+        // mengabaikannya, jadi suara TTS jadi beradu dengan musik. TRANSIENT
+        // memberi tahu app musik fokusnya hilang sementara, dan kebanyakan
+        // app musik menghentikan atau menurunkan volumenya sendiri.
+        afr = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
                 .setAudioAttributes(ttsAudio)
-                .setOnAudioFocusChangeListener(f -> { })
+                .setOnAudioFocusChangeListener(f -> Log.i(TAG, "focus berubah: " + f))
                 .build();
         tts = new TextToSpeech(this, status -> {
             if (status == TextToSpeech.SUCCESS) {
@@ -434,20 +438,20 @@ public class NLS extends NotificationListenerService {
         if (wl != null && !wl.isHeld()) wl.acquire(10000);
         try {
             ttsHandler.post(() -> {
-                int f = AudioManager.AUDIOFOCUS_REQUEST_FAILED;
                 if (am != null && afr != null) {
-                    f = am.requestAudioFocus(afr);
+                    int f = am.requestAudioFocus(afr);
+                    Log.i(TAG, "request focus = " + f);
+                    // Jaring pengaman: kalau onDone tidak pernah datang, focus
+                    // tetap dilepas setelah 60 detik supaya musik tidak diam
+                    // terus. Timeout ini diperbarui tiap antrean baru.
+                    mainHandler.removeCallbacks(focusFallback);
+                    mainHandler.postDelayed(focusFallback, 60000);
                 }
                 try {
                     tts.speak(text, TextToSpeech.QUEUE_ADD, null, "n" + System.currentTimeMillis());
                 } catch (Exception e) {
                     Log.e(TAG, "tts gagal", e);
                     speakDone();
-                }
-                if (f == AudioManager.AUDIOFOCUS_REQUEST_GRANTED && am != null) {
-                    mainHandler.postDelayed(() -> {
-                        if (am != null) am.abandonAudioFocusRequest(afr);
-                    }, 6000);
                 }
             });
         } catch (Exception e) {
@@ -456,9 +460,30 @@ public class NLS extends NotificationListenerService {
         }
     }
 
+    // Fokus audio sengaja ditahan sampai seluruh antrean selesai dibacakan,
+    // bukan dilepas dengan timer tetap. Kalau dilepas terlalu awal, musik
+    // kembali ke nada penuh padahal NotifBaca masih bicara.
+    private final Runnable focusFallback = () -> {
+        Log.w(TAG, "onDone tidak datang, lepas focus paksa");
+        releaseFocus();
+    };
+
+    private void releaseFocus() {
+        mainHandler.removeCallbacks(focusFallback);
+        if (am == null || afr == null) return;
+        try {
+            am.abandonAudioFocusRequest(afr);
+        } catch (Exception e) {
+            Log.w(TAG, "abandon focus gagal", e);
+        }
+    }
+
     private void speakDone() {
         mainHandler.post(() -> {
             ttsSpeaking = false;
+            // Kalau antrean sudah kosong, musik boleh lanjut. Kalau masih ada,
+            // focus ditahan supaya tidak ada jeda di antara dua notifikasi.
+            if (speakQueue.isEmpty()) releaseFocus();
             drainQueue();
         });
     }
@@ -467,6 +492,7 @@ public class NLS extends NotificationListenerService {
     public void onDestroy() {
         Log.e(TAG, "onDestroy");
         destroyed = true;
+        releaseFocus();
         if (ttsThread != null) ttsThread.quitSafely();
         if (tts != null) {
             tts.stop();

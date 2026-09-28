@@ -1,0 +1,80 @@
+--- 1
+grep: bad regex 'pack: [a-z0-9._]+ -- client.*?gain: [A-Z_]+': repetition-operator operand invalid
+--- 2
+grep: bad regex 'pack: [a-z0-9._]+ -- client.*?gain: [A-Z_]+': repetition-operator operand invalid
+--- 3
+grep: bad regex 'pack: [a-z0-9._]+ -- client.*?gain: [A-Z_]+': repetition-operator operand invalid
+--- 4
+grep: bad regex 'pack: [a-z0-9._]+ -- client.*?gain: [A-Z_]+': repetition-operator operand invalid
+--- 5
+grep: bad regex 'pack: [a-z0-9._]+ -- client.*?gain: [A-Z_]+': repetition-operator operand invalid
+--- 6
+grep: bad regex 'pack: [a-z0-9._]+ -- client.*?gain: [A-Z_]+': repetition-operator operand invalid
+--- 7
+grep: bad regex 'pack: [a-z0-9._]+ -- client.*?gain: [A-Z_]+': repetition-operator operand invalid
+--- 8
+grep: bad regex 'pack: [a-z0-9._]+ -- client.*?gain: [A-Z_]+': repetition-operator operand invalid
+--- 9
+grep: bad regex 'pack: [a-z0-9._]+ -- client.*?gain: [A-Z_]+': repetition-operator operand invalid
+--- 10
+grep: bad regex 'pack: [a-z0-9._]+ -- client.*?gain: [A-Z_]+': repetition-operator operand invalid
+--- 11
+grep: bad regex 'pack: [a-z0-9._]+ -- client.*?gain: [A-Z_]+': repetition-operator operand invalid
+--- 12
+grep: bad regex 'pack: [a-z0-9._]+ -- client.*?gain: [A-Z_]+': repetition-operator operand invalid
+--- 13
+grep: bad regex 'pack: [a-z0-9._]+ -- client.*?gain: [A-Z_]+': repetition-operator operand invalid
+--- 14
+grep: bad regex 'pack: [a-z0-9._]+ -- client.*?gain: [A-Z_]+': repetition-operator operand invalid
+--- 15
+grep: bad regex 'pack: [a-z0-9._]+ -- client.*?gain: [A-Z_]+': repetition-operator operand invalid
+--- 16
+grep: bad regex 'pack: [a-z0-9._]+ -- client.*?gain: [A-Z_]+': repetition-operator operand invalid
+--- 17
+grep: bad regex 'pack: [a-z0-9._]+ -- client.*?gain: [A-Z_]+': repetition-operator operand invalid
+--- 18
+grep: bad regex 'pack: [a-z0-9._]+ -- client.*?gain: [A-Z_]+': repetition-operator operand invalid
+--- 19
+grep: bad regex 'pack: [a-z0-9._]+ -- client.*?gain: [A-Z_]+': repetition-operator operand invalid
+--- 20
+grep: bad regex 'pack: [a-z0-9._]+ -- client.*?gain: [A-Z_]+': repetition-operator operand invalid
+--- 21
+grep: bad regex 'pack: [a-z0-9._]+ -- client.*?gain: [A-Z_]+': repetition-operator operand invalid
+--- 22
+grep: bad regex 'pack: [a-z0-9._]+ -- client.*?gain: [A-Z_]+': repetition-operator operand invalid
+--- 23
+grep: bad regex 'pack: [a-z0-9._]+ -- client.*?gain: [A-Z_]+': repetition-operator operand invalid
+--- 24
+grep: bad regex 'pack: [a-z0-9._]+ -- client.*?gain: [A-Z_]+': repetition-operator operand invalid
+--- 25
+grep: bad regex 'pack: [a-z0-9._]+ -- client.*?gain: [A-Z_]+': repetition-operator operand invalid
+--- 26
+grep: bad regex 'pack: [a-z0-9._]+ -- client.*?gain: [A-Z_]+': repetition-operator operand invalid
+--- 27
+grep: bad regex 'pack: [a-z0-9._]+ -- client.*?gain: [A-Z_]+': repetition-operator operand invalid
+--- 28
+grep: bad regex 'pack: [a-z0-9._]+ -- client.*?gain: [A-Z_]+': repetition-operator operand invalid
+--- 29
+grep: bad regex 'pack: [a-z0-9._]+ -- client.*?gain: [A-Z_]+': repetition-operator operand invalid
+--- 30
+grep: bad regex 'pack: [a-z0-9._]+ -- client.*?gain: [A-Z_]+': repetition-operator operand invalid
+--- 31
+grep: bad regex 'pack: [a-z0-9._]+ -- client.*?gain: [A-Z_]+': repetition-operator operand invalid
+--- 32
+grep: bad regex 'pack: [a-z0-9._]+ -- client.*?gain: [A-Z_]+': repetition-operator operand invalid
+--- 33
+grep: bad regex 'pack: [a-z0-9._]+ -- client.*?gain: [A-Z_]+': repetition-operator operand invalid
+--- 34
+grep: bad regex 'pack: [a-z0-9._]+ -- client.*?gain: [A-Z_]+': repetition-operator operand invalid
+--- 35
+grep: bad regex 'pack: [a-z0-9._]+ -- client.*?gain: [A-Z_]+': repetition-operator operand invalid
+--- 36
+grep: bad regex 'pack: [a-z0-9._]+ -- client.*?gain: [A-Z_]+': repetition-operator operand invalid
+--- 37
+grep: bad regex 'pack: [a-z0-9._]+ -- client.*?gain: [A-Z_]+': repetition-operator operand invalid
+--- 38
+grep: bad regex 'pack: [a-z0-9._]+ -- client.*?gain: [A-Z_]+': repetition-operator operand invalid
+--- 39
+grep: bad regex 'pack: [a-z0-9._]+ -- client.*?gain: [A-Z_]+': repetition-operator operand invalid
+--- 40
+grep: bad regex 'pack: [a-z0-9._]+ -- client.*?gain: [A-Z_]+': repetition-operator operand invalid
