@@ -1,9 +1,13 @@
 package com.home.notifbaca;
 
+import android.animation.ObjectAnimator;
 import android.app.Activity;
-import android.app.NotificationManager;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.res.ColorStateList;
+import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
@@ -11,17 +15,38 @@ import android.speech.tts.TextToSpeech;
 import android.speech.tts.Voice;
 import android.text.InputType;
 import android.util.Log;
+import android.util.TypedValue;
+import android.view.Gravity;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.animation.LinearInterpolator;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 
 public class MainActivity extends Activity {
+
+    // Palet cyberpunk: cyan = data, magenta = aksi, lime = siap, amber = perlu izin.
+    private static final int NEON_CYAN = 0xFF00E5FF;
+    private static final int NEON_MAGENTA = 0xFFFF2BD6;
+    private static final int NEON_LIME = 0xFF6BFF3D;
+    private static final int NEON_AMBER = 0xFFFFB020;
+    private static final int PANEL = 0xFF0B1020;
+    private static final int PANEL_LINE = 0x6600E5FF;
+    private static final int TXT_DIM = 0xFF7688A8;
+    private static final int TXT_BRIGHT = 0xFFE9F7FF;
+
     private TextView status;
+    private TextView statusSub;
+    private View statusDot;
+    private View scanLine;
+    private ObjectAnimator pulse;
     private EditText block;
     private CheckBox btOnly;
     private CheckBox clockCb;
@@ -42,140 +67,110 @@ public class MainActivity extends Activity {
         if (Build.VERSION.SDK_INT >= 33) {
             requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 1);
         }
+        sp = getSharedPreferences("cfg", MODE_PRIVATE);
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(40, 60, 40, 40);
+        root.setBackground(backdrop());
+        root.setPadding(dp(18), dp(20), dp(18), dp(28));
 
-        status = new TextView(this);
-        status.setTextSize(18);
-        root.addView(status);
+        root.addView(header());
+        root.addView(buildStatus());
+        root.addView(scanBar(), gapTop(14));
 
-        TextView lbl = new TextView(this);
-        lbl.setText("Blokir package (pisah koma):");
-        root.addView(lbl);
+        // 01 - suara
+        root.addView(section("SUARA"));
+        root.addView(neon("Suara TTS", TXT_BRIGHT, 14, Typeface.BOLD), gapTop(2));
 
-        block = new EditText(this);
-        block.setHint("misal: com.whatsapp, com.example.app");
-        block.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
-        root.addView(block);
-
-        sp = getSharedPreferences("cfg", MODE_PRIVATE);
-        block.setText(sp.getString("block", ""));
-
-        btOnly = new CheckBox(this);
-        btOnly.setText("Hanya baca saat Bluetooth aktif (TWS)");
-        btOnly.setChecked("1".equals(sp.getString("btonly", "")));
-        btOnly.setOnCheckedChangeListener((btn, on) -> {
-            sp.edit().putString("btonly", on ? "1" : "").apply();
-        });
-        root.addView(btOnly);
-
-        muteCb = new CheckBox(this);
-        muteCb.setText("Jeda sementara (dibisukan)");
-        muteCb.setChecked("1".equals(sp.getString("muted", "")));
-        muteCb.setOnCheckedChangeListener((btn, on) -> {
-            sp.edit().putString("muted", on ? "1" : "").apply();
-        });
-        root.addView(muteCb);
-
-        clockCb = new CheckBox(this);
-        clockCb.setText("Umumkan jam di jadwal berikut");
-        clockCb.setChecked("1".equals(sp.getString("clock", "")));
-        root.addView(clockCb);
-
-        clockEdit = new EditText(this);
-        clockEdit.setHint("Jam (HH:mm, pisah koma), mis. 19:00, 22:00");
-        clockEdit.setText(sp.getString("clocktimes", ""));
-        root.addView(clockEdit);
-
-        summaryCb = new CheckBox(this);
-        summaryCb.setText("Ringkasan notif tiap hari");
-        summaryCb.setChecked("1".equals(sp.getString("summary", "")));
-        root.addView(summaryCb);
-
-        summaryEdit = new EditText(this);
-        summaryEdit.setHint("Jam ringkasan (HH:mm), mis. 07:00");
-        summaryEdit.setText(sp.getString("summarytime", "07:00"));
-        root.addView(summaryEdit);
-
-        TextView lblVoice = new TextView(this);
-        lblVoice.setText("Suara TTS:");
-        root.addView(lblVoice);
-
-        voiceAll = new CheckBox(this);
-        voiceAll.setText("Tampilkan semua bahasa (banyak)");
-        voiceAll.setChecked(false);
+        voiceAll = check(new CheckBox(this), "Tampilkan semua bahasa (banyak)");
         voiceAll.setOnCheckedChangeListener((btn, on) -> refreshVoices());
         root.addView(voiceAll);
 
         voiceNames.add("Automatis (default)");
         voiceSp = new Spinner(this);
-        ArrayAdapter<String> va = new ArrayAdapter<>(this,
-                android.R.layout.simple_spinner_item, voiceNames);
-        va.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        voiceSp.setAdapter(va);
-        root.addView(voiceSp);
+        voiceSp.setBackground(panel(NEON_CYAN, 8));
+        voiceSp.setPadding(dp(10), dp(4), dp(10), dp(4));
+        voiceSp.setAdapter(new NeonAdapter());
+        root.addView(voiceSp, gapTop(6));
 
-        Button testVoice = new Button(this);
-        testVoice.setText("Tes suara terpilih");
-        testVoice.setOnClickListener(v -> {
-            if (pickerTts == null) {
-                Toast.makeText(this, "TTS belum siap", Toast.LENGTH_SHORT).show();
-                return;
-            }
-            String sel = voiceSp.getSelectedItem() == null ? ""
-                    : voiceSp.getSelectedItem().toString();
-            Voice vv = voiceMap.get(sel);
-            if (vv != null) {
-                try {
-                    pickerTts.setVoice(vv);
-                } catch (Exception e) {
-                    Log.w("NotifBaca", "setVoice gagal", e);
-                }
-            }
-            pickerTts.speak("Halo, ini contoh suara yang dipilih.", TextToSpeech.QUEUE_FLUSH, null, "nbtest");
+        // Wadah TTS terpisah dari NLS, khusus untuk mengisi daftar suara.
+        // Wajib di-init di sini: kalau tidak, refreshVoices() langsung bail
+        // dan spinner cuma berisi "Automatis (default)".
+        pickerTts = new TextToSpeech(this, st -> {
+            if (st == TextToSpeech.SUCCESS) runOnUiThread(this::refreshVoices);
         });
+
+        Button testVoice = btn("▶  TES SUARA TERPILIH", NEON_CYAN, false);
+        testVoice.setOnClickListener(v -> testVoice());
         root.addView(testVoice);
 
-        pickerTts = new TextToSpeech(this, status -> {
-            if (status == TextToSpeech.SUCCESS) {
-                runOnUiThread(this::refreshVoices);
-            }
-        });
+        // 02 - jadwal
+        root.addView(section("JADWAL"));
 
-        Button save = new Button(this);
-        save.setText("Simpan semua");
-        save.setOnClickListener(v -> {
-            sp.edit()
-                    .putString("block", block.getText().toString().trim())
-                    .putString("btonly", btOnly.isChecked() ? "1" : "")
-                    .putString("clock", clockCb.isChecked() ? "1" : "")
-                    .putString("clocktimes", clockEdit.getText().toString().trim())
-                    .putString("summary", summaryCb.isChecked() ? "1" : "")
-                    .putString("summarytime", summaryEdit.getText().toString().trim())
-                    .putString("summaryLast", "")
-                    .putString("voice", voiceSp.getSelectedItemPosition() == 0 ? ""
-                            : voiceMap.containsKey(voiceSp.getSelectedItem().toString())
-                            ? voiceMap.get(voiceSp.getSelectedItem().toString()).getName() : "")
-                    .apply();
-            Toast.makeText(this, "Disimpan", Toast.LENGTH_SHORT).show();
-        });
+        clockCb = check(new CheckBox(this), "Umumkan jam di jadwal berikut");
+        clockCb.setChecked("1".equals(sp.getString("clock", "")));
+        root.addView(clockCb);
+
+        clockEdit = field(new EditText(this), "19:00, 22:00  (jam, pisah koma)");
+        clockEdit.setInputType(InputType.TYPE_CLASS_TEXT);
+        clockEdit.setText(sp.getString("clocktimes", ""));
+        root.addView(clockEdit, gapTop(6));
+
+        summaryCb = check(new CheckBox(this), "Ringkasan notif tiap hari");
+        summaryCb.setChecked("1".equals(sp.getString("summary", "")));
+        root.addView(summaryCb);
+
+        summaryEdit = field(new EditText(this), "07:00  (jam ringkasan)");
+        summaryEdit.setInputType(InputType.TYPE_CLASS_TEXT);
+        summaryEdit.setText(sp.getString("summarytime", "07:00"));
+        root.addView(summaryEdit, gapTop(6));
+
+        // 03 - filter
+        root.addView(section("FILTER"));
+
+        btOnly = check(new CheckBox(this), "Hanya baca saat Bluetooth aktif (TWS)");
+        btOnly.setChecked("1".equals(sp.getString("btonly", "")));
+        btOnly.setOnCheckedChangeListener((btn, on) ->
+                sp.edit().putString("btonly", on ? "1" : "").apply());
+        root.addView(btOnly);
+
+        muteCb = check(new CheckBox(this), "Jeda sementara (dibisukan)");
+        muteCb.setChecked("1".equals(sp.getString("muted", "")));
+        muteCb.setOnCheckedChangeListener((btn, on) ->
+                sp.edit().putString("muted", on ? "1" : "").apply());
+        root.addView(muteCb);
+
+        root.addView(neon("Blokir package (pisah koma)", TXT_BRIGHT, 14, Typeface.BOLD), gapTop(10));
+        block = field(new EditText(this), "com.whatsapp, com.example.app");
+        block.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        block.setText(sp.getString("block", ""));
+        root.addView(block);
+
+        // aksi
+        root.addView(section("AKSI"));
+
+        Button save = btn("◆  SIMPAN SEMUA", NEON_MAGENTA, true);
+        save.setOnClickListener(v -> save());
         root.addView(save);
 
-        Button grant = new Button(this);
-        grant.setText("Buka pengaturan akses notifikasi");
+        Button grant = btn("⚙  BUKA AKSES NOTIFIKASI", NEON_CYAN, false);
         grant.setOnClickListener(v ->
                 startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)));
         root.addView(grant);
 
-        Button privacy = new Button(this);
-        privacy.setText("Tentang & kebijakan privasi");
+        Button privacy = btn("i  TENTANG & KEBIJAKAN PRIVASI", NEON_CYAN, false);
         privacy.setOnClickListener(v ->
                 startActivity(new Intent(this, PrivacyActivity.class)));
         root.addView(privacy);
 
-        setContentView(root);
+        ScrollView sc = new ScrollView(this);
+        sc.setBackground(backdrop());
+        // Tanpa ini EditText pertama langsung dapat fokus dan ScrollView
+        // meloncat ke tengah, jadi header "NOTIFBACA" kelewat saat app dibuka.
+        root.setFocusableInTouchMode(true);
+        root.requestFocus();
+        sc.addView(root);
+        setContentView(sc);
         update();
         maybeShowIntro();
     }
@@ -184,6 +179,277 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         update();
+        startPulse();
+    }
+
+    @Override
+    protected void onPause() {
+        if (pulse != null) pulse.cancel();
+        super.onPause();
+    }
+
+    // ---------- potongan tampilan ----------
+
+    private View header() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setBackground(panel(NEON_MAGENTA, 14));
+        box.setPadding(dp(16), dp(16), dp(16), dp(16));
+
+        TextView brand = neon("NOTIFBACA", NEON_CYAN, 30, Typeface.BOLD);
+        brand.setShadowLayer(dp(12), 0, 0, 0xFF00E5FF);
+        box.addView(brand);
+
+        TextView tag = neon("// notifikasi masuk, jadi suara", NEON_MAGENTA, 11, Typeface.NORMAL);
+        tag.setPadding(0, dp(2), 0, 0);
+        box.addView(tag);
+        return box;
+    }
+
+    private View buildStatus() {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setBackground(panel(PANEL_LINE, 12));
+        card.setPadding(dp(14), dp(12), dp(14), dp(12));
+
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+
+        statusDot = new View(this);
+        statusDot.setBackground(dot(NEON_AMBER));
+        row.addView(statusDot, new LinearLayout.LayoutParams(dp(9), dp(9)));
+
+        status = neon("MEMUAT", NEON_LIME, 14, Typeface.BOLD);
+        status.setPadding(dp(9), 0, 0, 0);
+        row.addView(status);
+        card.addView(row);
+
+        statusSub = neon("cek izin akses notifikasi", TXT_DIM, 11, Typeface.NORMAL);
+        statusSub.setPadding(0, dp(6), 0, 0);
+        card.addView(statusSub);
+        return card;
+    }
+
+    // Garis "scanner" yang bernapas, biar Kesan hidup.
+    private View scanBar() {
+        scanLine = new View(this);
+        GradientDrawable g = new GradientDrawable(
+                GradientDrawable.Orientation.LEFT_RIGHT,
+                new int[]{0x0000E5FF, 0xFF00E5FF, 0xFFFF2BD6, 0x00FF2BD6});
+        g.setCornerRadius(dp(1));
+        scanLine.setBackground(g);
+        return scanLine;
+    }
+
+    private void startPulse() {
+        if (scanLine == null) return;
+        if (pulse != null) pulse.cancel();
+        pulse = ObjectAnimator.ofFloat(scanLine, "alpha", 0.2f, 1f, 0.2f);
+        pulse.setDuration(2400);
+        pulse.setRepeatCount(ObjectAnimator.INFINITE);
+        pulse.setInterpolator(new LinearInterpolator());
+        pulse.start();
+    }
+
+    private View section(String title) {
+        LinearLayout wrap = new LinearLayout(this);
+        wrap.setOrientation(LinearLayout.VERTICAL);
+        wrap.setPadding(0, dp(24), 0, dp(4));
+
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+
+        View bar = new View(this);
+        GradientDrawable bd = new GradientDrawable();
+        bd.setColor(NEON_MAGENTA);
+        bd.setCornerRadius(dp(2));
+        bar.setBackground(bd);
+        row.addView(bar, new LinearLayout.LayoutParams(dp(3), dp(14)));
+
+        TextView t = neon("   " + title, NEON_CYAN, 12, Typeface.BOLD);
+        t.setShadowLayer(dp(6), 0, 0, 0xAA00E5FF);
+        row.addView(t);
+        wrap.addView(row);
+
+        View line = new View(this);
+        GradientDrawable ld = new GradientDrawable();
+        ld.setColor(0x3300E5FF);
+        line.setBackground(ld);
+        wrap.addView(line, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, hair()));
+        return wrap;
+    }
+
+    private TextView neon(String text, int color, float spSize, int style) {
+        TextView t = new TextView(this);
+        t.setText(text);
+        t.setTextSize(TypedValue.COMPLEX_UNIT_SP, spSize);
+        t.setTextColor(color);
+        t.setTypeface(Typeface.MONOSPACE, style);
+        t.setLetterSpacing(0.05f);
+        return t;
+    }
+
+    private EditText field(EditText e, String hint) {
+        e.setHint(hint);
+        e.setHintTextColor(0xFF46587A);
+        e.setTextColor(TXT_BRIGHT);
+        e.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        e.setTypeface(Typeface.MONOSPACE);
+        e.setPadding(dp(12), dp(10), dp(12), dp(10));
+        GradientDrawable g = new GradientDrawable();
+        g.setColor(0xFF070B16);
+        g.setCornerRadius(dp(8));
+        g.setStroke(hair2(), 0x5500E5FF);
+        e.setBackground(g);
+        return e;
+    }
+
+    private CheckBox check(CheckBox cb, String text) {
+        cb.setText(text);
+        cb.setTextColor(TXT_BRIGHT);
+        cb.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        cb.setButtonTintList(new ColorStateList(
+                new int[][]{
+                        new int[]{android.R.attr.state_checked},
+                        new int[]{}
+                },
+                new int[]{NEON_CYAN, 0xFF39496A}));
+        cb.setPadding(dp(2), dp(8), 0, dp(2));
+        return cb;
+    }
+
+    private Button btn(String text, int stroke, boolean filled) {
+        Button b = new Button(this);
+        b.setText(text);
+        b.setAllCaps(false);
+        b.setTextColor(filled ? 0xFF0A0410 : stroke);
+        b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        b.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+        b.setLetterSpacing(0.08f);
+        GradientDrawable g = new GradientDrawable();
+        g.setColor(filled ? stroke : 0xFF080D1A);
+        g.setCornerRadius(dp(9));
+        g.setStroke(Math.max(1, Math.round(dp(1.3f))), stroke);
+        b.setBackground(new RippleDrawable(ColorStateList.valueOf(0x66FFFFFF), g, null));
+        b.setLayoutParams(new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(48)));
+        return b;
+    }
+
+    // Spinner bawaan tema terang bikin bentrok, jadi barisnya digambar sendiri.
+    private class NeonAdapter extends ArrayAdapter<String> {
+        NeonAdapter() {
+            // Layout bawaan cuma sebagai cadangan; barisnya digambar sendiri
+            // di getView/getDropDownView biar ikut tema gelap.
+            super(MainActivity.this, android.R.layout.simple_spinner_item, voiceNames);
+        }
+
+        @Override
+        public View getView(int pos, View convert, ViewGroup parent) {
+            return spinRow(getItem(pos));
+        }
+
+        @Override
+        public View getDropDownView(int pos, View convert, ViewGroup parent) {
+            TextView t = spinRow(getItem(pos));
+            t.setBackgroundColor(0xFF080D1A);
+            return t;
+        }
+    }
+
+    private TextView spinRow(String label) {
+        TextView t = new TextView(this);
+        t.setText(label);
+        t.setTextColor(TXT_BRIGHT);
+        t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        t.setTypeface(Typeface.MONOSPACE);
+        t.setGravity(Gravity.CENTER_VERTICAL);
+        t.setPadding(dp(12), dp(10), dp(12), dp(10));
+        return t;
+    }
+
+    // ---------- helper gambar ----------
+
+    private int dp(float v) {
+        return Math.round(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v,
+                getResources().getDisplayMetrics()));
+    }
+
+    private int hair() {
+        return Math.max(1, Math.round(dp(0.5f)));
+    }
+
+    private int hair2() {
+        return Math.max(1, Math.round(dp(1f)));
+    }
+
+    private LinearLayout.LayoutParams gapTop(int dip) {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = dp(dip);
+        return lp;
+    }
+
+    private GradientDrawable backdrop() {
+        GradientDrawable g = new GradientDrawable();
+        g.setOrientation(GradientDrawable.Orientation.TL_BR);
+        g.setColors(new int[]{0xFF0B0A22, 0xFF05060E, 0xFF14061E});
+        return g;
+    }
+
+    private GradientDrawable panel(int stroke, float radius) {
+        GradientDrawable g = new GradientDrawable();
+        g.setColor(PANEL);
+        g.setCornerRadius(dp(radius));
+        g.setStroke(hair2(), stroke);
+        return g;
+    }
+
+    private GradientDrawable dot(int color) {
+        GradientDrawable g = new GradientDrawable();
+        g.setShape(GradientDrawable.OVAL);
+        g.setColor(color);
+        return g;
+    }
+
+    // ---------- aksi & status ----------
+
+    private void testVoice() {
+        if (pickerTts == null) {
+            Toast.makeText(this, "TTS belum siap", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        String sel = voiceSp.getSelectedItem() == null
+                ? "" : voiceSp.getSelectedItem().toString();
+        Voice vv = voiceMap.get(sel);
+        if (vv != null) {
+            try {
+                pickerTts.setVoice(vv);
+            } catch (Exception e) {
+                Log.w("NotifBaca", "setVoice gagal", e);
+            }
+        }
+        pickerTts.speak("Halo, ini contoh suara yang dipilih.",
+                TextToSpeech.QUEUE_FLUSH, null, "nbtest");
+    }
+
+    private void save() {
+        sp.edit()
+                .putString("block", block.getText().toString().trim())
+                .putString("btonly", btOnly.isChecked() ? "1" : "")
+                .putString("clock", clockCb.isChecked() ? "1" : "")
+                .putString("clocktimes", clockEdit.getText().toString().trim())
+                .putString("summary", summaryCb.isChecked() ? "1" : "")
+                .putString("summarytime", summaryEdit.getText().toString().trim())
+                .putString("summaryLast", "")
+                .putString("voice", voiceSp.getSelectedItemPosition() == 0
+                        ? ""
+                        : voiceMap.containsKey(voiceSp.getSelectedItem().toString())
+                        ? voiceMap.get(voiceSp.getSelectedItem().toString()).getName() : "")
+                .apply();
+        Toast.makeText(this, "Disimpan", Toast.LENGTH_SHORT).show();
     }
 
     private void refreshVoices() {
@@ -232,12 +498,14 @@ public class MainActivity extends Activity {
 
     private void update() {
         String enabled = Settings.Secure.getString(
-                getContentResolver(), "enabled_notification_listeners") == null ? "" :
-                Settings.Secure.getString(getContentResolver(), "enabled_notification_listeners");
-        boolean on = enabled.contains(getPackageName());
-        status.setText(on
-                ? "Status: AKTIF — notifikasi bakal dibacakan"
-                : "Status: BELUM aktif — izinkan akses notifikasi dulu");
+                getContentResolver(), "enabled_notification_listeners");
+        boolean on = enabled != null && enabled.contains(getPackageName());
+        statusDot.setBackground(dot(on ? NEON_LIME : NEON_AMBER));
+        status.setTextColor(on ? NEON_LIME : NEON_AMBER);
+        status.setText(on ? "SISTEM AKTIF" : "MENUNGGU IZIN");
+        statusSub.setText(on
+                ? "notifikasi yang masuk dibacakan otomatis"
+                : "buka \"AKSES NOTIFIKASI\" di bawah ini dulu");
     }
 
     private void maybeShowIntro() {
@@ -253,8 +521,8 @@ public class MainActivity extends Activity {
                         + "lokal, tidak dikirim ke mana pun.\n"
                         + "2. Izin notifikasi sistem (Android 13+) — untuk menjaga layanan "
                         + "tetap aktif.\n\n"
-                        + "Pengaturan: akses notifikasi dibuka lewat \"Buka pengaturan akses "
-                        + "notifikasi\" di atas. Kamu juga bisa blokir aplikasi tertentu, "
+                        + "Pengaturan: akses notifikasi dibuka lewat \"Buka akses notifikasi\" "
+                        + "di bawah. Kamu juga bisa blokir aplikasi tertentu, "
                         + "jeda, atau baca hanya saat Bluetooth aktif.")
                 .setPositiveButton("Mengerti", (d, w) -> d.dismiss())
                 .show();

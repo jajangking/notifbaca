@@ -290,6 +290,10 @@ public class NLS extends NotificationListenerService {
     }
 
     private boolean noise(String pkg) {
+        // Notifikasi milik NotifBaca sendiri ("NotifBaca aktif") selalu noise
+        // selama app hidup, jadi dibuang di sini dan bukan di NOISE yang bisa
+        // diubah user dari UI.
+        if ("com.home.notifbaca".equals(pkg)) return true;
         if (NOISE.contains(pkg)) return true;
         if (pkg.startsWith("com.transsion.") || pkg.startsWith("android.")) return true;
         return false;

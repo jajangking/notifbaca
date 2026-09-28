@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Tema gelap dipakai biar status bar, dialog, dan popup spinner ikut
+         palet cyberpunk. Semua tampilan utama digambar di MainActivity. -->
+    <style name="NotifBacaTheme" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/bg_deep</item>
+        <item name="android:colorAccent">@color/neon_cyan</item>
+        <item name="android:statusBarColor">@color/bg_deep</item>
+        <item name="android:navigationBarColor">@color/bg_deep</item>
+        <item name="android:textColorPrimary">@color/txt_bright</item>
+    </style>
+</resources>

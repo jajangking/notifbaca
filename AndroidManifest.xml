@@ -13,7 +13,7 @@
     <application
         android:label="NotifBaca"
         android:icon="@mipmap/ic_launcher"
-        android:theme="@android:style/Theme.Material.Light"
+        android:theme="@style/NotifBacaTheme"
         android:allowBackup="true">
 
         <activity android:name=".MainActivity" android:exported="true">
