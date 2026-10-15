@@ -1,8 +1,10 @@
 package com.home.notifbaca;
 
 import android.app.Activity;
+import android.content.ComponentName;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -157,6 +159,10 @@ public class MainActivity extends Activity {
         grant.setOnClickListener(v ->
                 startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)));
         s4.addView(grant, gapTop(10));
+
+        Button reconnect = btn("Sambung ulang layanan", ACCENT, false);
+        reconnect.setOnClickListener(v -> reconnect());
+        s4.addView(reconnect, gapTop(10));
 
         Button privacy = btn("Tentang & kebijakan privasi", ACCENT, false);
         privacy.setOnClickListener(v ->
@@ -447,13 +453,50 @@ public class MainActivity extends Activity {
     private void update() {
         String enabled = Settings.Secure.getString(
                 getContentResolver(), "enabled_notification_listeners");
-        boolean on = enabled != null && enabled.contains(getPackageName());
-        statusDot.setBackground(dot(on ? GREEN_OK : AMBER_NEED));
-        status.setTextColor(on ? GREEN_OK : AMBER_NEED);
-        status.setText(on ? "Sistem aktif" : "Menunggu izin");
-        statusSub.setText(on
-                ? "Notifikasi yang masuk dibacakan otomatis"
-                : "Buka \"akses notifikasi\" di bawah ini dulu");
+        boolean izin = enabled != null && enabled.contains(getPackageName());
+        // Izin ada belum tentu layanan jalan (dibunuh battery-saver / putus
+        // bind). NLS menulis cap last_hb tiap 15 detik saat masih hidup.
+        long lastHb = sp.getLong("last_hb", 0);
+        boolean hidup = izin && (System.currentTimeMillis() - lastHb < 30000);
+        if (!izin) {
+            statusDot.setBackground(dot(AMBER_NEED));
+            status.setTextColor(AMBER_NEED);
+            status.setText("Menunggu izin");
+            statusSub.setText("Buka \"akses notifikasi\" di bawah ini dulu");
+        } else if (hidup) {
+            statusDot.setBackground(dot(GREEN_OK));
+            status.setTextColor(GREEN_OK);
+            status.setText("Sistem aktif");
+            statusSub.setText("Notifikasi yang masuk dibacakan otomatis");
+        } else {
+            statusDot.setBackground(dot(AMBER_NEED));
+            status.setTextColor(AMBER_NEED);
+            status.setText("Izin ok, layanan belum jalan");
+            statusSub.setText("Tekan \"Sambung ulang layanan\"; "
+                    + "matikan battery-saver/autostart-block buat NotifBaca");
+        }
+    }
+
+    // Paksa sistem bind ulang listener. Perlu di ROM agresif (Transsion
+    // dkk) yang sering memutus service walau izin masih tercatat.
+    private void reconnect() {
+        try {
+            ComponentName cn = new ComponentName(this, NLS.class);
+            getPackageManager().setComponentEnabledSetting(cn,
+                    PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                    PackageManager.DONT_KILL_APP);
+            getPackageManager().setComponentEnabledSetting(cn,
+                    PackageManager.COMPONENT_ENABLED_STATE_ENABLED,
+                    PackageManager.DONT_KILL_APP);
+            if (Build.VERSION.SDK_INT >= 24) {
+                android.service.notification.NotificationListenerService.requestRebind(cn);
+            }
+            Toast.makeText(this, "Permintaan sambung ulang dikirim", Toast.LENGTH_SHORT).show();
+        } catch (Exception e) {
+            Log.w("NotifBaca", "reconnect gagal", e);
+            Toast.makeText(this, "Gagal sambung ulang", Toast.LENGTH_SHORT).show();
+        }
+        update();
     }
 
     private void maybeShowIntro() {

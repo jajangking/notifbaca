@@ -5,6 +5,7 @@ import android.service.notification.StatusBarNotification;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.media.AudioAttributes;
@@ -36,6 +37,10 @@ public class NLS extends NotificationListenerService {
     private static final String KEY_SUMMARYTIME = "summarytime";
     private static final String KEY_SUMMARYLAST = "summaryLast";
     private static final String KEY_SPOKEN = "spoken";
+    private static final String KEY_LAST_HB = "last_hb";
+    // Rescan saat rebind cuma buat notif segar, bukan basi berjam-jam.
+    private static final long CATCHUP_MAX_AGE = 120000;
+    private static final int CATCHUP_MAX_COUNT = 3;
 
     private TextToSpeech tts;
     private PowerManager.WakeLock wl;
@@ -232,6 +237,13 @@ public class NLS extends NotificationListenerService {
             @Override
             public void run() {
                 Log.i(TAG, "hb " + (++hbCount));
+                // Cap waktu hidup buat UI: bedakan "izin ada" vs "layanan jalan".
+                try {
+                    getSharedPreferences(PREF, MODE_PRIVATE)
+                            .edit().putLong(KEY_LAST_HB, System.currentTimeMillis()).apply();
+                } catch (Exception e) {
+                    Log.w(TAG, "tulis last_hb gagal", e);
+                }
                 mainHandler.postDelayed(this, 15000);
             }
         }, 15000);
@@ -312,6 +324,12 @@ public class NLS extends NotificationListenerService {
         return false;
     }
 
+    // Key stabil anti-koma: teks notif bisa mengandung koma, jadi simpan
+    // hash hex, bukan teks mentah yang di-split koma.
+    private static String stableKey(String raw) {
+        return Integer.toHexString(raw == null ? 0 : raw.hashCode());
+    }
+
     private void loadSpoken() {
         String s = getSharedPreferences(PREF, MODE_PRIVATE).getString(KEY_SPOKEN, "");
         if (s == null) return;
@@ -349,7 +367,15 @@ public class NLS extends NotificationListenerService {
             StatusBarNotification[] all = getActiveNotifications();
             if (all != null) {
                 Log.i(TAG, "rescan aktif " + all.length);
-                for (StatusBarNotification sbn : all) consider(sbn, true);
+                // Cuma kejar yang segar: notif basi dilewati di consider(),
+                // dan dibatasi biar tidak borongan suara aneh saat buka app.
+                for (StatusBarNotification sbn : all) {
+                    if (speakQueue.size() >= CATCHUP_MAX_COUNT) {
+                        Log.i(TAG, "rescan stop, budget habis");
+                        break;
+                    }
+                    consider(sbn, true);
+                }
             }
         } catch (Exception e) {
             Log.e(TAG, "rescan gagal", e);
@@ -358,6 +384,28 @@ public class NLS extends NotificationListenerService {
 
     public void onListenerDisconnected() {
         Log.e(TAG, "listener DISCONNECTED");
+        // Self-heal: minta sistem bind ulang. Tanpa ini service diam
+        // selamanya sampai user buka app (badge izin tetap hijau).
+        try {
+            requestRebind(new ComponentName(this, NLS.class));
+            Log.i(TAG, "requestRebind dikirim");
+        } catch (Exception e) {
+            Log.e(TAG, "requestRebind gagal", e);
+        }
+        // Jaring kedua: coba lagi 5 detik kemudian kalau masih putus.
+        try {
+            mainHandler.postDelayed(() -> {
+                if (destroyed) return;
+                try {
+                    requestRebind(new ComponentName(NLS.this, NLS.class));
+                    Log.i(TAG, "requestRebind ulang dikirim");
+                } catch (Exception e) {
+                    Log.e(TAG, "requestRebind ulang gagal", e);
+                }
+            }, 5000);
+        } catch (Exception e) {
+            Log.e(TAG, "jadwal rebind gagal", e);
+        }
     }
 
     public void onNullBinding(android.content.Intent intent) {
@@ -382,7 +430,16 @@ public class NLS extends NotificationListenerService {
             Log.i(TAG, "SKIP noise " + pkg);
             return;
         }
-        Log.i(TAG, "GOT " + pkg);
+        // Saat catchUp (rebind / buka app), lewati notif basi biar tidak
+        // borongan suara aneh. Notif live (catchUp=false) selalu dibaca.
+        if (catchUp) {
+            long age = System.currentTimeMillis() - sbn.getPostTime();
+            if (age > CATCHUP_MAX_AGE) {
+                Log.i(TAG, "SKIP basi " + pkg + " umur=" + (age / 1000) + "s");
+                return;
+            }
+        }
+        Log.i(TAG, (catchUp ? "KETINGGALAN " : "GOT ") + pkg);
 
         String title = "";
         String text = "";
@@ -395,7 +452,7 @@ public class NLS extends NotificationListenerService {
         }
         if (title.isEmpty() && text.isEmpty()) return;
 
-        String key = pkg + "|" + title + "|" + text;
+        String key = stableKey(pkg + "|" + title + "|" + text);
         if (recent.contains(key)) return;
         if (recent.size() > 300) recent.clear();
         recent.add(key);
@@ -477,8 +534,13 @@ public class NLS extends NotificationListenerService {
     // bukan dilepas dengan timer tetap. Kalau dilepas terlalu awal, musik
     // kembali ke nada penuh padahal NotifBaca masih bicara.
     private final Runnable focusFallback = () -> {
-        Log.w(TAG, "onDone tidak datang, lepas focus paksa");
+        Log.w(TAG, "onDone tidak datang, lepas focus paksa + reset antrean");
+        // Dulu cuma releaseFocus(): kalau onDone/onError tidak pernah datang
+        // (network voice mati, engine sibuk saat Doze), ttsSpeaking macet
+        // true selamanya dan semua notif berikutnya diam sampai restart.
+        ttsSpeaking = false;
         releaseFocus();
+        drainQueue();
     };
 
     private void releaseFocus() {
