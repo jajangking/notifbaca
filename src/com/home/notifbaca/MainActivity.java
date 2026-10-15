@@ -1,6 +1,5 @@
 package com.home.notifbaca;
 
-import android.animation.ObjectAnimator;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -19,7 +18,6 @@ import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.animation.LinearInterpolator;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.CheckBox;
@@ -32,20 +30,20 @@ import android.widget.Toast;
 
 public class MainActivity extends Activity {
 
-    // Palet cyberpunk: cyan = data, magenta = aksi, lime = siap, amber = perlu izin.
-    private static final int NEON_CYAN = 0xFF00E5FF;
-    private static final int NEON_MAGENTA = 0xFFFF2BD6;
-    private static final int NEON_LIME = 0xFF6BFF3D;
-    private static final int NEON_AMBER = 0xFFFFB020;
-    private static final int PANEL = 0xFF0B1020;
-    private static final int TXT_DIM = 0xFF7688A8;
-    private static final int TXT_BRIGHT = 0xFFE9F7FF;
+    // Palet tenang: satu aksen, teks gelap di atas kartu putih.
+    private static final int ACCENT = 0xFF0B57D0;
+    private static final int PAGE_BG = 0xFFF2F4F7;
+    private static final int CARD_BG = 0xFFFFFFFF;
+    private static final int CARD_STROKE = 0xFFE1E6EB;
+    private static final int FIELD_BG = 0xFFF6F8FA;
+    private static final int TXT_MAIN = 0xFF1A1C1E;
+    private static final int TXT_SUB = 0xFF5A6470;
+    private static final int GREEN_OK = 0xFF1A7F37;
+    private static final int AMBER_NEED = 0xFFB54708;
 
     private TextView status;
     private TextView statusSub;
     private View statusDot;
-    private View scanLine;
-    private ObjectAnimator pulse;
     private EditText block;
     private CheckBox btOnly;
     private CheckBox clockCb;
@@ -70,30 +68,23 @@ public class MainActivity extends Activity {
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackground(backdrop());
-        root.setPadding(dp(18), dp(20), dp(18), dp(28));
+        root.setBackgroundColor(PAGE_BG);
+        root.setPadding(dp(16), dp(16), dp(16), dp(24));
 
         root.addView(header());
-        root.addView(buildStatus(), gapTop(14));
-        root.addView(scanBar(), gapTop(14));
-
-        // Tiap bagian dibungkus kartu sendiri: latar kartu lebih terang dari
-        // halaman dan diberi border neon, jadi batas antar section terlihat
-        // jelas tanpa harus menebak dari garis tipis.
+        root.addView(buildStatus(), gapTop(12));
 
         // 01 - suara
-        LinearLayout s1 = sectionCard("01", "SUARA");
+        LinearLayout s1 = sectionCard("SUARA");
         s1.addView(caption("Suara yang dipakai buat baca notifikasi"));
 
         voiceAll = check(new CheckBox(this), "Tampilkan semua bahasa (banyak)");
         voiceAll.setOnCheckedChangeListener((btn, on) -> refreshVoices());
-        s1.addView(voiceAll, gapTop(10));
+        s1.addView(voiceAll, gapTop(8));
 
         voiceNames.add("Automatis (default)");
         voiceSp = new Spinner(this);
-        voiceSp.setBackground(panel(0xAA00E5FF, 8));
-        voiceSp.setPadding(dp(10), dp(4), dp(10), dp(4));
-        voiceSp.setAdapter(new NeonAdapter());
+        voiceSp.setAdapter(new PlainAdapter());
         s1.addView(voiceSp, gapTop(8));
 
         // Wadah TTS terpisah dari NLS, khusus untuk mengisi daftar suara.
@@ -103,18 +94,18 @@ public class MainActivity extends Activity {
             if (st == TextToSpeech.SUCCESS) runOnUiThread(this::refreshVoices);
         });
 
-        Button testVoice = btn("▶  TES SUARA TERPILIH", NEON_CYAN, false);
+        Button testVoice = btn("Tes suara terpilih", ACCENT, false);
         testVoice.setOnClickListener(v -> testVoice());
         s1.addView(testVoice, gapTop(10));
-        root.addView(s1, gapTop(18));
+        root.addView(s1, gapTop(12));
 
         // 02 - jadwal
-        LinearLayout s2 = sectionCard("02", "JADWAL");
+        LinearLayout s2 = sectionCard("JADWAL");
         s2.addView(caption("Umumkan jam dan kirim ringkasan harian"));
 
         clockCb = check(new CheckBox(this), "Umumkan jam di jadwal berikut");
         clockCb.setChecked("1".equals(sp.getString("clock", "")));
-        s2.addView(clockCb, gapTop(10));
+        s2.addView(clockCb, gapTop(8));
 
         clockEdit = field(new EditText(this), "19:00, 22:00  (jam, pisah koma)");
         clockEdit.setInputType(InputType.TYPE_CLASS_TEXT);
@@ -123,23 +114,23 @@ public class MainActivity extends Activity {
 
         summaryCb = check(new CheckBox(this), "Ringkasan notif tiap hari");
         summaryCb.setChecked("1".equals(sp.getString("summary", "")));
-        s2.addView(summaryCb, gapTop(12));
+        s2.addView(summaryCb, gapTop(10));
 
         summaryEdit = field(new EditText(this), "07:00  (jam ringkasan)");
         summaryEdit.setInputType(InputType.TYPE_CLASS_TEXT);
         summaryEdit.setText(sp.getString("summarytime", "07:00"));
         s2.addView(summaryEdit, gapTop(6));
-        root.addView(s2, gapTop(18));
+        root.addView(s2, gapTop(12));
 
         // 03 - filter
-        LinearLayout s3 = sectionCard("03", "FILTER");
+        LinearLayout s3 = sectionCard("FILTER");
         s3.addView(caption("App mana yang boleh dan tidak boleh dibacakan"));
 
         btOnly = check(new CheckBox(this), "Hanya baca saat Bluetooth aktif (TWS)");
         btOnly.setChecked("1".equals(sp.getString("btonly", "")));
         btOnly.setOnCheckedChangeListener((btn, on) ->
                 sp.edit().putString("btonly", on ? "1" : "").apply());
-        s3.addView(btOnly, gapTop(10));
+        s3.addView(btOnly, gapTop(8));
 
         muteCb = check(new CheckBox(this), "Jeda sementara (dibisukan)");
         muteCb.setChecked("1".equals(sp.getString("muted", "")));
@@ -147,36 +138,36 @@ public class MainActivity extends Activity {
                 sp.edit().putString("muted", on ? "1" : "").apply());
         s3.addView(muteCb, gapTop(2));
 
-        s3.addView(caption("Blokir package (pisah koma)"), gapTop(12));
+        s3.addView(caption("Blokir package (pisah koma)"), gapTop(10));
         block = field(new EditText(this), "com.whatsapp, com.example.app");
         block.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
         block.setText(sp.getString("block", ""));
         s3.addView(block, gapTop(6));
-        root.addView(s3, gapTop(18));
+        root.addView(s3, gapTop(12));
 
         // aksi
-        LinearLayout s4 = sectionCard("04", "AKSI");
+        LinearLayout s4 = sectionCard("AKSI");
         s4.addView(caption("Perubahan baru berlaku setelah disimpan"));
 
-        Button save = btn("◆  SIMPAN SEMUA", NEON_MAGENTA, true);
+        Button save = btn("Simpan semua", ACCENT, true);
         save.setOnClickListener(v -> save());
-        s4.addView(save, gapTop(12));
+        s4.addView(save, gapTop(10));
 
-        Button grant = btn("⚙  BUKA AKSES NOTIFIKASI", NEON_CYAN, false);
+        Button grant = btn("Buka akses notifikasi", ACCENT, false);
         grant.setOnClickListener(v ->
                 startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)));
         s4.addView(grant, gapTop(10));
 
-        Button privacy = btn("i  TENTANG & KEBIJAKAN PRIVASI", NEON_CYAN, false);
+        Button privacy = btn("Tentang & kebijakan privasi", ACCENT, false);
         privacy.setOnClickListener(v ->
                 startActivity(new Intent(this, PrivacyActivity.class)));
         s4.addView(privacy, gapTop(10));
-        root.addView(s4);
+        root.addView(s4, gapTop(12));
 
         ScrollView sc = new ScrollView(this);
-        sc.setBackground(backdrop());
+        sc.setBackgroundColor(PAGE_BG);
         // Tanpa ini EditText pertama langsung dapat fokus dan ScrollView
-        // meloncat ke tengah, jadi header "NOTIFBACA" kelewat saat app dibuka.
+        // meloncat ke tengah, jadi header kelewat saat app dibuka.
         root.setFocusableInTouchMode(true);
         root.requestFocus();
         sc.addView(root);
@@ -189,13 +180,6 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         update();
-        startPulse();
-    }
-
-    @Override
-    protected void onPause() {
-        if (pulse != null) pulse.cancel();
-        super.onPause();
     }
 
     // ---------- potongan tampilan ----------
@@ -203,14 +187,13 @@ public class MainActivity extends Activity {
     private View header() {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setBackground(cardPanel(NEON_MAGENTA));
-        box.setPadding(dp(16), dp(16), dp(16), dp(16));
+        box.setBackground(cardBg());
+        box.setPadding(dp(16), dp(14), dp(16), dp(14));
 
-        TextView brand = neon("NOTIFBACA", NEON_CYAN, 30, Typeface.BOLD);
-        brand.setShadowLayer(dp(12), 0, 0, 0xFF00E5FF);
+        TextView brand = txt("NotifBaca", TXT_MAIN, 22, Typeface.BOLD);
         box.addView(brand);
 
-        TextView tag = neon("// notifikasi masuk, jadi suara", NEON_MAGENTA, 11, Typeface.NORMAL);
+        TextView tag = txt("Notifikasi masuk, dibacakan jadi suara", TXT_SUB, 13, Typeface.NORMAL);
         tag.setPadding(0, dp(2), 0, 0);
         box.addView(tag);
         return box;
@@ -219,176 +202,133 @@ public class MainActivity extends Activity {
     private View buildStatus() {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
-        card.setBackground(cardPanel());
+        card.setBackground(cardBg());
         card.setPadding(dp(14), dp(12), dp(14), dp(12));
 
         LinearLayout row = new LinearLayout(this);
         row.setGravity(Gravity.CENTER_VERTICAL);
 
         statusDot = new View(this);
-        statusDot.setBackground(dot(NEON_AMBER));
-        row.addView(statusDot, new LinearLayout.LayoutParams(dp(9), dp(9)));
+        statusDot.setBackground(dot(AMBER_NEED));
+        row.addView(statusDot, new LinearLayout.LayoutParams(dp(10), dp(10)));
 
-        status = neon("MEMUAT", NEON_LIME, 14, Typeface.BOLD);
-        status.setPadding(dp(9), 0, 0, 0);
+        status = txt("Memuat", TXT_MAIN, 15, Typeface.BOLD);
+        status.setPadding(dp(10), 0, 0, 0);
         row.addView(status);
         card.addView(row);
 
-        statusSub = neon("cek izin akses notifikasi", TXT_DIM, 11, Typeface.NORMAL);
-        statusSub.setPadding(0, dp(6), 0, 0);
+        statusSub = txt("Cek izin akses notifikasi", TXT_SUB, 12, Typeface.NORMAL);
+        statusSub.setPadding(0, dp(4), 0, 0);
         card.addView(statusSub);
         return card;
     }
 
-    // Garis "scanner" yang bernapas, biar Kesan hidup.
-    private View scanBar() {
-        scanLine = new View(this);
-        GradientDrawable g = new GradientDrawable(
-                GradientDrawable.Orientation.LEFT_RIGHT,
-                new int[]{0x0000E5FF, 0xFF00E5FF, 0xFFFF2BD6, 0x00FF2BD6});
-        g.setCornerRadius(dp(1));
-        scanLine.setBackground(g);
-        return scanLine;
-    }
-
-    private void startPulse() {
-        if (scanLine == null) return;
-        if (pulse != null) pulse.cancel();
-        pulse = ObjectAnimator.ofFloat(scanLine, "alpha", 0.2f, 1f, 0.2f);
-        pulse.setDuration(2400);
-        pulse.setRepeatCount(ObjectAnimator.INFINITE);
-        pulse.setInterpolator(new LinearInterpolator());
-        pulse.start();
-    }
-
-    // Kartu section: latar jelas lebih terang dari halaman, border neontebal,
-    // dan badge nomor di kiri judul. Tiga sinyal sekaligus supaya user langsung
-    // tahu di mana satu section berakhir dan yang mana mulai.
-    private LinearLayout sectionCard(String no, String title) {
+    // Kartu section: putih, border abu tipis, judul biasa.
+    private LinearLayout sectionCard(String title) {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
-        card.setBackground(cardPanel());
+        card.setBackground(cardBg());
         card.setPadding(dp(14), dp(12), dp(14), dp(14));
 
-        LinearLayout head = new LinearLayout(this);
-        head.setGravity(Gravity.CENTER_VERTICAL);
-
-        TextView badge = neon(no, 0xFF07101A, 11, Typeface.BOLD);
-        badge.setGravity(Gravity.CENTER);
-        badge.setBackground(panel(NEON_CYAN, 5));
-        head.addView(badge, new LinearLayout.LayoutParams(dp(30), dp(22)));
-
-        TextView t = neon(title, NEON_CYAN, 13, Typeface.BOLD);
-        t.setShadowLayer(dp(7), 0, 0, 0xAA00E5FF);
-        t.setPadding(dp(10), 0, 0, 0);
-        head.addView(t);
-        card.addView(head);
+        TextView t = txt(title, TXT_MAIN, 13, Typeface.BOLD);
+        card.addView(t);
 
         View line = new View(this);
-        GradientDrawable ld = new GradientDrawable();
-        ld.setColor(0x7700E5FF);
-        line.setBackground(ld);
+        line.setBackgroundColor(CARD_STROKE);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, hair());
-        lp.topMargin = dp(11);
+                LinearLayout.LayoutParams.MATCH_PARENT, Math.max(1, Math.round(dp(1f))));
+        lp.topMargin = dp(8);
         lp.bottomMargin = dp(2);
         card.addView(line, lp);
         return card;
     }
 
-    // Keterangan kecil pembuka tiap kartu, merah gumsuiin isi kartu.
     private TextView caption(String text) {
-        TextView t = neon(text, TXT_DIM, 11, Typeface.NORMAL);
-        t.setPadding(0, dp(6), 0, 0);
+        TextView t = txt(text, TXT_SUB, 12, Typeface.NORMAL);
+        t.setPadding(0, dp(4), 0, 0);
         return t;
     }
 
-    private TextView neon(String text, int color, float spSize, int style) {
+    private TextView txt(String text, int color, float spSize, int style) {
         TextView t = new TextView(this);
         t.setText(text);
         t.setTextSize(TypedValue.COMPLEX_UNIT_SP, spSize);
         t.setTextColor(color);
-        t.setTypeface(Typeface.MONOSPACE, style);
-        t.setLetterSpacing(0.05f);
+        t.setTypeface(null, style);
         return t;
     }
 
     private EditText field(EditText e, String hint) {
         e.setHint(hint);
-        e.setHintTextColor(0xFF46587A);
-        e.setTextColor(TXT_BRIGHT);
-        e.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        e.setTypeface(Typeface.MONOSPACE);
+        e.setHintTextColor(0xFF8A94A0);
+        e.setTextColor(TXT_MAIN);
+        e.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         e.setPadding(dp(12), dp(10), dp(12), dp(10));
         GradientDrawable g = new GradientDrawable();
-        g.setColor(0xFF070B16);
+        g.setColor(FIELD_BG);
         g.setCornerRadius(dp(8));
-        g.setStroke(hair2(), 0x8800E5FF);
+        g.setStroke(Math.max(1, Math.round(dp(1f))), CARD_STROKE);
         e.setBackground(g);
         return e;
     }
 
     private CheckBox check(CheckBox cb, String text) {
         cb.setText(text);
-        cb.setTextColor(TXT_BRIGHT);
+        cb.setTextColor(TXT_MAIN);
         cb.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         cb.setButtonTintList(new ColorStateList(
                 new int[][]{
                         new int[]{android.R.attr.state_checked},
                         new int[]{}
                 },
-                new int[]{NEON_CYAN, 0xFF39496A}));
+                new int[]{ACCENT, 0xFF8A94A0}));
         cb.setPadding(dp(2), dp(8), 0, dp(2));
         return cb;
     }
 
-    private Button btn(String text, int stroke, boolean filled) {
+    private Button btn(String text, int accent, boolean filled) {
         Button b = new Button(this);
         b.setText(text);
         b.setAllCaps(false);
-        b.setTextColor(filled ? 0xFF0A0410 : stroke);
-        b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        b.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-        b.setLetterSpacing(0.08f);
+        b.setTextColor(filled ? 0xFFFFFFFF : accent);
+        b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        b.setTypeface(null, Typeface.BOLD);
         GradientDrawable g = new GradientDrawable();
-        g.setColor(filled ? stroke : 0xFF080D1A);
-        g.setCornerRadius(dp(9));
-        g.setStroke(Math.max(1, Math.round(dp(1.3f))), stroke);
-        b.setBackground(new RippleDrawable(ColorStateList.valueOf(0x66FFFFFF), g, null));
+        g.setColor(filled ? accent : CARD_BG);
+        g.setCornerRadius(dp(8));
+        g.setStroke(Math.max(1, Math.round(dp(1f))), filled ? accent : CARD_STROKE);
+        b.setBackground(new RippleDrawable(ColorStateList.valueOf(0x22000000), g, null));
         b.setLayoutParams(new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(48)));
         return b;
     }
 
-    // Spinner bawaan tema terang bikin bentrok, jadi barisnya digambar sendiri.
-    private class NeonAdapter extends ArrayAdapter<String> {
-        NeonAdapter() {
-            // Layout bawaan cuma sebagai cadangan; barisnya digambar sendiri
-            // di getView/getDropDownView biar ikut tema gelap.
+    // Spinner ikut tema terang standar.
+    private class PlainAdapter extends ArrayAdapter<String> {
+        PlainAdapter() {
             super(MainActivity.this, android.R.layout.simple_spinner_item, voiceNames);
+            setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         }
 
         @Override
         public View getView(int pos, View convert, ViewGroup parent) {
-            return spinRow(getItem(pos));
+            TextView t = spinRow(getItem(pos));
+            return t;
         }
 
         @Override
         public View getDropDownView(int pos, View convert, ViewGroup parent) {
-            TextView t = spinRow(getItem(pos));
-            t.setBackgroundColor(0xFF080D1A);
-            return t;
+            return super.getDropDownView(pos, convert, parent);
         }
     }
 
     private TextView spinRow(String label) {
         TextView t = new TextView(this);
         t.setText(label);
-        t.setTextColor(TXT_BRIGHT);
-        t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        t.setTypeface(Typeface.MONOSPACE);
+        t.setTextColor(TXT_MAIN);
+        t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         t.setGravity(Gravity.CENTER_VERTICAL);
-        t.setPadding(dp(12), dp(10), dp(12), dp(10));
+        t.setPadding(dp(4), dp(8), dp(4), dp(8));
         return t;
     }
 
@@ -399,14 +339,6 @@ public class MainActivity extends Activity {
                 getResources().getDisplayMetrics()));
     }
 
-    private int hair() {
-        return Math.max(1, Math.round(dp(0.5f)));
-    }
-
-    private int hair2() {
-        return Math.max(1, Math.round(dp(1f)));
-    }
-
     private LinearLayout.LayoutParams gapTop(int dip) {
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
@@ -415,32 +347,11 @@ public class MainActivity extends Activity {
         return lp;
     }
 
-    private GradientDrawable backdrop() {
+    private GradientDrawable cardBg() {
         GradientDrawable g = new GradientDrawable();
-        g.setOrientation(GradientDrawable.Orientation.TL_BR);
-        g.setColors(new int[]{0xFF0B0A22, 0xFF05060E, 0xFF14061E});
-        return g;
-    }
-
-    private GradientDrawable panel(int stroke, float radius) {
-        GradientDrawable g = new GradientDrawable();
-        g.setColor(PANEL);
-        g.setCornerRadius(dp(radius));
-        g.setStroke(hair2(), stroke);
-        return g;
-    }
-
-    // Latar kartu: jauh lebih terang dari gradien halaman supaya siluetnya
-    // langsung terbaca saat menggulir.
-    private GradientDrawable cardPanel() {
-        return cardPanel(0xAA00E5FF);
-    }
-
-    private GradientDrawable cardPanel(int stroke) {
-        GradientDrawable g = new GradientDrawable();
-        g.setColor(0xFF0F1626);
-        g.setCornerRadius(dp(14));
-        g.setStroke(Math.max(1, Math.round(dp(1.2f))), stroke);
+        g.setColor(CARD_BG);
+        g.setCornerRadius(dp(12));
+        g.setStroke(Math.max(1, Math.round(dp(1f))), CARD_STROKE);
         return g;
     }
 
@@ -537,12 +448,12 @@ public class MainActivity extends Activity {
         String enabled = Settings.Secure.getString(
                 getContentResolver(), "enabled_notification_listeners");
         boolean on = enabled != null && enabled.contains(getPackageName());
-        statusDot.setBackground(dot(on ? NEON_LIME : NEON_AMBER));
-        status.setTextColor(on ? NEON_LIME : NEON_AMBER);
-        status.setText(on ? "SISTEM AKTIF" : "MENUNGGU IZIN");
+        statusDot.setBackground(dot(on ? GREEN_OK : AMBER_NEED));
+        status.setTextColor(on ? GREEN_OK : AMBER_NEED);
+        status.setText(on ? "Sistem aktif" : "Menunggu izin");
         statusSub.setText(on
-                ? "notifikasi yang masuk dibacakan otomatis"
-                : "buka \"AKSES NOTIFIKASI\" di bawah ini dulu");
+                ? "Notifikasi yang masuk dibacakan otomatis"
+                : "Buka \"akses notifikasi\" di bawah ini dulu");
     }
 
     private void maybeShowIntro() {
