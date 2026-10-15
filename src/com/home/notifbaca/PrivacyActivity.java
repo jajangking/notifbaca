@@ -51,7 +51,7 @@ public class PrivacyActivity extends Activity {
                 + "pengaturan disimpan di preferensi lokal perangkat. Menghapus aplikasi menghapus "
                 + "semua data lokal.\n\n"
                 + "Kontak pengembang:\n"
-                + "[isi alamat email Anda di sini]");
+                + "jajangpostmab@gmail.com");
         ScrollView sv = new ScrollView(this);
         sv.addView(body);
         LinearLayout.LayoutParams svP = new LinearLayout.LayoutParams(
