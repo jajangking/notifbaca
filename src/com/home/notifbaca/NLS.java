@@ -11,6 +11,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
+import android.content.pm.ServiceInfo;
 import android.media.AudioAttributes;
 import android.media.AudioDeviceInfo;
 import android.media.AudioFocusRequest;
@@ -21,6 +22,7 @@ import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.PowerManager;
 import android.os.Process;
+import android.os.SystemClock;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.UtteranceProgressListener;
 import android.speech.tts.Voice;
@@ -45,6 +47,14 @@ public class NLS extends NotificationListenerService {
     // Rescan saat rebind cuma buat notif segar, bukan basi berjam-jam.
     private static final long CATCHUP_MAX_AGE = 120000;
     private static final int CATCHUP_MAX_COUNT = 3;
+    // Masa tenggang watchdog setelah onCreate: bind listener oleh sistem bisa
+    // lebih lama dari 48 detik (boot, layar mati, Doze/freezer), jadi jangan
+    // hitung "belum terhubung" sebagai gagal sebelum lewat batas ini.
+    private static final long WATCH_GRACE_MS = 120000;
+    // Wake lock CPU selalu pakai timeout (diperbarui heartbeat), tidak pernah
+    // acquire() tanpa batas: lock yang bocor semalaman bikin Android menaruh
+    // app di bucket restricted dan ROM makin agresif membunuh prosesnya.
+    private static final long CPU_WL_TIMEOUT_MS = 10 * 60 * 1000L;
 
     // Dipakai RebindJobService dan UI (satu proses) untuk membedakan
     // "layanan masih hidup" dari "proses baru hidup karena job, tapi NLS
@@ -85,6 +95,10 @@ public class NLS extends NotificationListenerService {
     private int ttsInitAttempts;
     private int ttsInitGeneration;
     private int fgAttempts;
+    private long createdElapsedMs;
+    private long cpuWlDeadlineElapsedMs;
+    private long lastTtsReviveMs;
+    private volatile boolean everConnected;
     private final Set<String> recent = new HashSet<>();
     private final java.util.List<String> summaryLog = new java.util.ArrayList<>();
 
@@ -110,9 +124,19 @@ public class NLS extends NotificationListenerService {
         Log.i(TAG, "onCreate");
         sAlive = true;
         sConnected = false;
+        createdElapsedMs = SystemClock.elapsedRealtime();
+        // mainHandler wajib dibuat paling dulu. Dulu startFg() dipanggil
+        // sebelum mainHandler ada: kalau startForeground() ditolak sistem
+        // (umum di Android 12-16 saat listener di-bind dari background),
+        // blok catch menyentuh mainHandler yang masih null -> NPE keluar dari
+        // onCreate -> proses mati -> sistem bind ulang -> crash lagi.
+        mainHandler = new Handler(android.os.Looper.getMainLooper());
         loadSpoken();
         initChannel();
-        startFg();
+        // startForeground() sengaja TIDAK dipanggil di sini. Di onCreate,
+        // binding dari sistem belum terbentuk sehingga promosi ke foreground
+        // bisa ditolak (ForegroundServiceStartNotAllowedException). Promosi
+        // dilakukan di onListenerConnected(), saat binding sistem sudah ada.
         PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
         powerManager = pm;
         wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "NotifBaca:speak");
@@ -120,7 +144,6 @@ public class NLS extends NotificationListenerService {
         ttsThread = new HandlerThread("tts");
         ttsThread.start();
         ttsHandler = new Handler(ttsThread.getLooper());
-        mainHandler = new Handler(android.os.Looper.getMainLooper());
         // Opsional (default aktif): tahan CPU saat layar mati supaya callback
         // notifikasi tidak ikut tertidur. Tanpa ini proses memang hidup, tapi
         // handler baru jalan lagi saat layar/app dibuka — persis gejala
@@ -343,11 +366,26 @@ public class NLS extends NotificationListenerService {
         boolean want = holdCpu && sConnected && powerManager != null
                 && !powerManager.isInteractive();
         try {
-            if (want && !cpuWl.isHeld()) {
-                cpuWl.acquire();
-                Log.i(TAG, "cpu_wl on");
-            } else if (!want && cpuWl.isHeld()) {
+            if (want) {
+                long nowElapsed = SystemClock.elapsedRealtime();
+                if (!cpuWl.isHeld()) {
+                    // Pakai timeout, bukan acquire() tanpa batas: kalaupun
+                    // broadcast layar terlewat, lock lepas sendiri paling
+                    // lama 10 menit lagi dan tidak menguras baterai semalaman.
+                    cpuWl.acquire(CPU_WL_TIMEOUT_MS);
+                    cpuWlDeadlineElapsedMs = nowElapsed + CPU_WL_TIMEOUT_MS;
+                    Log.i(TAG, "cpu_wl on");
+                } else if (cpuWlDeadlineElapsedMs - nowElapsed < 60000) {
+                    // Perbarui sebelum timeout melepasnya. Fungsi ini dipanggil
+                    // heartbeat tiap 15 detik selagi lock dipegang.
+                    cpuWl.release();
+                    cpuWl.acquire(CPU_WL_TIMEOUT_MS);
+                    cpuWlDeadlineElapsedMs = nowElapsed + CPU_WL_TIMEOUT_MS;
+                    Log.i(TAG, "cpu_wl diperbarui");
+                }
+            } else if (cpuWl.isHeld()) {
                 cpuWl.release();
+                cpuWlDeadlineElapsedMs = 0;
                 Log.i(TAG, "cpu_wl off");
             }
         } catch (Exception e) {
@@ -406,11 +444,33 @@ public class NLS extends NotificationListenerService {
                 }
                 if (connected) {
                     sConnected = true;
+                    everConnected = true;
                     fails = 0;
                 } else {
                     sConnected = false;
-                    fails++;
-                    Log.e(TAG, "watch gagal ke-" + fails + " (butuh 4 beruntun buat kill)");
+                    long sejakCreate = SystemClock.elapsedRealtime() - createdElapsedMs;
+                    if (!everConnected && sejakCreate < WATCH_GRACE_MS) {
+                        // Belum pernah terhubung sejak onCreate dan binding
+                        // sistem memang bisa telat (boot/Doze/freezer di
+                        // Android 14-16). Dulu kondisi sehat ini dihitung
+                        // gagal: proses bunuh diri 48 detik setelah dibuat,
+                        // sebelum sempat di-bind, lalu berulang terus.
+                        Log.i(TAG, "watch: belum terhubung, masa tenggang bind ("
+                                + (sejakCreate / 1000) + "s)");
+                    } else {
+                        fails++;
+                        Log.e(TAG, "watch gagal ke-" + fails + " (butuh 4 beruntun buat kill)");
+                        if (fails == 2) {
+                            // Minta baik-baik dulu sebelum bunuh proses:
+                            // requestRebind memang API resmi buat ini.
+                            try {
+                                requestRebind(new ComponentName(NLS.this, NLS.class));
+                                Log.i(TAG, "watch: requestRebind dikirim");
+                            } catch (Exception e) {
+                                Log.e(TAG, "watch: requestRebind gagal", e);
+                            }
+                        }
+                    }
                 }
                 updateCpuWakeLock();
                 if (fails >= 4) {
@@ -447,13 +507,24 @@ public class NLS extends NotificationListenerService {
                     .setShowWhen(false)
                     .setCategory(Notification.CATEGORY_SERVICE)
                     .build();
-            startForeground(1, n);
+            // Selalu sebutkan tipe yang sama dengan manifest
+            // (mediaPlayback: tidak kena batas 6 jam/24 jam seperti dataSync
+            // di Android 15+, dan tersedia sejak API 29). Tanpa tipe, app
+            // yang targetSdk-nya naik ke 34+ langsung kena
+            // MissingForegroundServiceTypeException di Android 14-16.
+            if (Build.VERSION.SDK_INT >= 29) {
+                startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
+            } else {
+                startForeground(1, n);
+            }
             fgAttempts = 0;
         } catch (Exception e) {
             // Jangan biarkan service mati hanya karena FGS ditolak sistem.
             // Listener tetap bisa jalan sebagai bound service; coba lagi nanti.
             Log.e(TAG, "startForeground gagal (percobaan " + fgAttempts + ")", e);
-            if (fgAttempts < 5) mainHandler.postDelayed(this::startFg, 15000);
+            if (fgAttempts < 5 && mainHandler != null) {
+                mainHandler.postDelayed(this::startFg, 15000);
+            }
         }
     }
 
@@ -531,11 +602,20 @@ public class NLS extends NotificationListenerService {
     public void onListenerConnected() {
         Log.i(TAG, "listener connected");
         sConnected = true;
+        everConnected = true;
         writeHeartbeat();
         updateCpuWakeLock();
         fgAttempts = 0;
         startFg();
         RebindJobService.schedule(this);
+        if (!ttsReady && ttsInitAttempts >= TTS_INIT_MAX) {
+            // Init TTS sempat menyerah (mis. engine belum siap setelah boot).
+            // Rebind biasanya terjadi saat kondisi sudah stabil: coba lagi,
+            // jangan diam selamanya sampai proses berikutnya.
+            Log.w(TAG, "TTS belum siap, init ulang saat rebind");
+            ttsInitAttempts = 0;
+            initTts();
+        }
         loadSpoken();
         try {
             StatusBarNotification[] all = getActiveNotifications();
@@ -680,6 +760,19 @@ public class NLS extends NotificationListenerService {
             return;
         }
         Log.i(TAG, "SPEAKING len=" + text.length());
+        if (!ttsReady && ttsInitAttempts >= TTS_INIT_MAX) {
+            // Sama seperti di onListenerConnected: antrean tidak akan pernah
+            // jalan kalau init TTS sudah menyerah. Coba hidupkan lagi, tapi
+            // dibatasi sekali per menit supaya tidak membuat TextToSpeech
+            // berulang-ulang untuk tiap notifikasi.
+            long nowElapsed = SystemClock.elapsedRealtime();
+            if (nowElapsed - lastTtsReviveMs > 60000) {
+                lastTtsReviveMs = nowElapsed;
+                Log.w(TAG, "TTS belum siap, init ulang dari notifikasi masuk");
+                ttsInitAttempts = 0;
+                initTts();
+            }
+        }
         enqueue(text);
         if (ttsReady) drainQueue();
     }

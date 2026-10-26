@@ -6,6 +6,8 @@ import android.app.job.JobScheduler;
 import android.app.job.JobService;
 import android.content.ComponentName;
 import android.content.Context;
+import android.os.Build;
+import android.provider.Settings;
 import android.service.notification.NotificationListenerService;
 import android.util.Log;
 
@@ -24,9 +26,20 @@ public class RebindJobService extends JobService {
         try {
             JobScheduler js = (JobScheduler) ctx.getSystemService(Context.JOB_SCHEDULER_SERVICE);
             if (js == null) return;
+            // Jangan jadwalkan ulang kalau job yang sama sudah antre:
+            // schedule() dengan ID sama MENGGANTI job dan mengulang periode
+            // 15 menit dari nol. schedule() dipanggil dari onCreate,
+            // onListenerConnected, onListenerDisconnected, MainActivity, dan
+            // BootReceiver - saat layanan flapping, job pengaman jadi tidak
+            // pernah sempat jalan karena timernya selalu di-reset.
+            if (js.getPendingJob(JOB_ID) != null) return;
             JobInfo job = new JobInfo.Builder(JOB_ID,
                     new ComponentName(ctx, RebindJobService.class))
-                    .setPeriodic(PERIOD_MS)
+                    // Flex 5 menit: sistem boleh menjalankan job di akhir
+                    // periode saat perangkat kebetulan bangun, tidak harus
+                    // menunggu tepat 15 menit (penting di Android 16 yang
+                    // menerapkan kuota runtime job per standby bucket).
+                    .setPeriodic(PERIOD_MS, 5 * 60 * 1000L)
                     .setPersisted(true)
                     .setRequiredNetworkType(JobInfo.NETWORK_TYPE_NONE)
                     .build();
@@ -42,6 +55,14 @@ public class RebindJobService extends JobService {
     @Override
     public boolean onStartJob(JobParameters params) {
         try {
+            // Tanpa akses notifikasi, requestRebind tidak akan pernah
+            // berhasil; jangan bangunkan proses sia-sia tiap 15 menit.
+            String enabled = Settings.Secure.getString(
+                    getContentResolver(), "enabled_notification_listeners");
+            if (enabled == null || !enabled.contains(getPackageName())) {
+                Log.i(TAG, "job rebind: akses notifikasi belum diberi, lewati");
+                return false;
+            }
             boolean alive = NLS.isAlive();
             boolean connected = NLS.isConnected();
             long last = getSharedPreferences("cfg", MODE_PRIVATE).getLong("last_hb", 0);
@@ -67,6 +88,12 @@ public class RebindJobService extends JobService {
 
     @Override
     public boolean onStopJob(JobParameters params) {
+        // Catat alasan berhenti (API 31+) buat diagnosis: di Android 16 job
+        // bisa dihentikan karena kuota standby bucket habis
+        // (STOP_REASON_QUOTA), dan itu terlihat persis seperti "app mati".
+        if (Build.VERSION.SDK_INT >= 31 && params != null) {
+            Log.w(TAG, "job rebind dihentikan sistem, stopReason=" + params.getStopReason());
+        }
         return true;
     }
 }
