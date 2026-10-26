@@ -4,7 +4,10 @@ NotifBaca — aplikasi Android (package `com.home.notifbaca`, minSdk 26 / target
 
 ## Build: tanpa Gradle, manual di Termux
 
-Repo ini TIDAK punya Gradle/project SDK Android. Build-mu manual, urutan wajib sebagai berikut (tools = paket Termux `aapt2`, `d8`, `apksigner`; `android.jar` dari `~/androidjar/android-13/android.jar`):
+Cara termudah: `ANDROID_JAR=~/androidjar/android-13/android.jar ./build.sh`
+(atau set `NB_KS_PASS` / biarkan `apksigner` menanyakan password).
+
+Repo ini TIDAK punya Gradle/project SDK Android. Urutan manualnya (tools = paket Termux `aapt2`, `d8`, `apksigner`; `android.jar` dari `~/androidjar/android-13/android.jar`):
 
 ```
 aapt2 compile --dir res -o obj/res.zip
@@ -32,7 +35,12 @@ apksigner sign --ks keystore/nb.keystore --ks-key-alias <alias> --ks-pass pass:<
 - Fokus audio pakai `AUDIOFOCUS_GAIN_TRANSIENT`, **jangan** `GAIN_TRANSIENT_MAY_DUCK`. Duck cuma permintaan ("boleh nge-lower") dan hampir selalu diabaikan app musik (YouTube dsb) sehingga suara TTS beradu dengan musik. `GAIN_TRANSIENT` bikin app musik benar-benar berhenti/lower dan otomatis lanjut lagi setelah focus dilepas. Focus dipegang sampai **seluruh antrean** selesai dibaca (dilepas di `speakDone()` kalau `speakQueue` kosong), bukan timer tetap — dulu dilepas paksa setelah 6 detik sehingga musik kembali nada penuh padahal notifikasi masih dibaca. `focusFallback` (60 detik) hanya jaring pengaman kalau `onDone` tidak pernah datang.
 - TTS main di stream media (`USAGE_MEDIA`, `AudioManager.STREAM_MUSIC`) supaya ikut volume perangkat apa adanya. App **tidak** lagi menaikkan/menurunkan volume sendiri — slider volume + pref `cfg`/`volume` + `applyVolume()`/`restoreVolume()` sudah dihapus. Kalau mau volume khusus NotifBaca, harus lewat mixer/equalizer atau Aturan Volume Android 13+, bukan `setStreamVolume`.
 - Log `AS.AudioService: AudioHardening background playback would be muted for com.google.android.tts, level: full` itu **peringatan saja** (bg-audio hardening Android 17, `enforced=false`), bukan mute sungguhan — TTS tetap kedengaran. Jangan panik dan jangan `cmd audio set-hardening 0`.
-- Watchdog di `NLS` sengaja membunuh proses sendiri setelah 4 kali gagal berturut-turut mengecek notif aktif — ini self-heal biar sistem rebind listener. JANGAN "perbaiki" sebagai bug.
-- Foreground service id=1 dipakai watchdog sebagai penanda hidup — jangan ganti id/channel (`CHANNEL="run"`) kalau tidak menyesuaikan watchdog.
+- Watchdog di `NLS` sengaja membunuh proses sendiri setelah 4 kali `getActiveNotifications()` **null/throw** berturut-turut — ini self-heal biar sistem rebind listener. Jangan memakai keberadaan notifikasi FGS id=1 sebagai penanda hidup: notifikasi itu bisa disembunyikan sistem (POST_NOTIFICATIONS ditolak / channel MIN) dan dulu menyebabkan kill-loop.
+- `RebindJobService` adalah jaring pengaman di luar proses: JobScheduler periodik 15 menit, persisted, minta `requestRebind` kalau `NLS.isAlive()/isConnected()` false atau `last_hb` lebih dari 3 menit. Dijadwalkan dari `NLS`, `MainActivity`, `BootReceiver` (BOOT_COMPLETED / QUICKBOOT_POWERON / MY_PACKAGE_REPLACED).
+- **Mode andal**: `NLS` memegang `PARTIAL_WAKE_LOCK` (`NotifBaca:cpu`) selama layar mati + listener tersambung + pref `cfg`/`holdcpu` = `1` (default aktif). Tanpa wake lock, proses tetap hidup sebagai FGS tapi handler/callback bisa tertidur saat layar mati (gejala "layanan mati kalau app tidak dibuka"). Release saat layar nyala, listener putus, atau `onDestroy`; user bisa mematikannya di section KEANDALAN.
+- Foreground service id=1 dan `CHANNEL="run"` jangan diubah tanpa menyesuaikan watchdog/kanal.
+- **Jangan pernah menulis isi notifikasi ke logcat.** Log hanya package, panjang teks, dan status. Ini aplikasi privasi.
+- `allowBackup="false"` dan Auto Backup dimatikan; jangan diubah tanpa alasan kuat.
+- `onDestroy` wajib menghentikan heartbeat/tick (`removeCallbacksAndMessages`) supaya UI tidak salah bilang "Sistem aktif" setelah layanan mati.
 - Logcat: `adb logcat -s NotifBaca` (TAG `NotifBaca`). Heartbeat tiap 15s, watch-check tiap 12s.
 - Di device: butuh grant akses notifikasi (NLS) + izin POST_NOTIFICATIONS (SDK 33+); keduanya lewat UI MainActivity.

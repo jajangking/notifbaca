@@ -9,8 +9,10 @@ import android.content.res.ColorStateList;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.PowerManager;
 import android.provider.Settings;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.Voice;
@@ -56,17 +58,32 @@ public class MainActivity extends Activity {
     private CheckBox voiceAll;
     private CheckBox muteCb;
     private TextToSpeech pickerTts;
+    private boolean pickerReady;
     private SharedPreferences sp;
+    private final android.os.Handler uiHandler =
+            new android.os.Handler(android.os.Looper.getMainLooper());
     private final java.util.List<String> voiceNames = new java.util.ArrayList<>();
     private final java.util.Map<String, Voice> voiceMap = new java.util.HashMap<>();
+    private final Runnable uiRefresh = new Runnable() {
+        @Override
+        public void run() {
+            update();
+            uiHandler.postDelayed(this, 3000);
+        }
+    };
 
     @Override
     protected void onCreate(Bundle saved) {
         super.onCreate(saved);
-        if (Build.VERSION.SDK_INT >= 33) {
+        if (Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission("android.permission.POST_NOTIFICATIONS")
+                != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 1);
         }
         sp = getSharedPreferences("cfg", MODE_PRIVATE);
+        // Dijadwalkan juga dari sini supaya job pengaman aktif setelah app
+        // pertama kali dibuka, tanpa menunggu reboot.
+        RebindJobService.schedule(this);
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -81,7 +98,11 @@ public class MainActivity extends Activity {
         s1.addView(caption("Suara yang dipakai buat baca notifikasi"));
 
         voiceAll = check(new CheckBox(this), "Tampilkan semua bahasa (banyak)");
-        voiceAll.setOnCheckedChangeListener((btn, on) -> refreshVoices());
+        voiceAll.setChecked("1".equals(sp.getString("showall", "")));
+        voiceAll.setOnCheckedChangeListener((btn, on) -> {
+            sp.edit().putString("showall", on ? "1" : "").apply();
+            refreshVoices();
+        });
         s1.addView(voiceAll, gapTop(8));
 
         voiceNames.add("Automatis (default)");
@@ -93,7 +114,12 @@ public class MainActivity extends Activity {
         // Wajib di-init di sini: kalau tidak, refreshVoices() langsung bail
         // dan spinner cuma berisi "Automatis (default)".
         pickerTts = new TextToSpeech(this, st -> {
-            if (st == TextToSpeech.SUCCESS) runOnUiThread(this::refreshVoices);
+            if (st == TextToSpeech.SUCCESS) {
+                pickerReady = true;
+                runOnUiThread(this::refreshVoices);
+            } else {
+                Log.w("NotifBaca", "TTS picker gagal init: " + st);
+            }
         });
 
         Button testVoice = btn("Tes suara terpilih", ACCENT, false);
@@ -147,6 +173,19 @@ public class MainActivity extends Activity {
         s3.addView(block, gapTop(6));
         root.addView(s3, gapTop(12));
 
+        // 04 - keandalan
+        LinearLayout reli = sectionCard("KEANDALAN");
+        reli.addView(caption("Biar notifikasi tetap diproses saat layar mati"));
+        CheckBox holdCpu = check(new CheckBox(this),
+                "Tahan proses saat layar mati (baterai lebih boros)");
+        holdCpu.setChecked("1".equals(sp.getString("holdcpu", "1")));
+        holdCpu.setOnCheckedChangeListener((btn, on) ->
+                sp.edit().putString("holdcpu", on ? "1" : "").apply());
+        reli.addView(holdCpu, gapTop(8));
+        reli.addView(caption("Aktifkan kalau notifikasi telat saat layar mati. "
+                + "Tetap izinkan baterai/autostart di HP Infinix/Transsion."), gapTop(6));
+        root.addView(reli, gapTop(12));
+
         // aksi
         LinearLayout s4 = sectionCard("AKSI");
         s4.addView(caption("Perubahan baru berlaku setelah disimpan"));
@@ -163,6 +202,18 @@ public class MainActivity extends Activity {
         Button reconnect = btn("Sambung ulang layanan", ACCENT, false);
         reconnect.setOnClickListener(v -> reconnect());
         s4.addView(reconnect, gapTop(10));
+
+        Button battery = btn("Izinkan latar belakang (baterai)", ACCENT, false);
+        battery.setOnClickListener(v -> requestBatteryExemption());
+        s4.addView(battery, gapTop(10));
+
+        Button notifSettings = btn("Pengaturan notifikasi status", ACCENT, false);
+        notifSettings.setOnClickListener(v -> openNotificationSettings());
+        s4.addView(notifSettings, gapTop(10));
+
+        Button appInfo = btn("Info aplikasi / autostart", ACCENT, false);
+        appInfo.setOnClickListener(v -> openAppDetails());
+        s4.addView(appInfo, gapTop(10));
 
         Button privacy = btn("Tentang & kebijakan privasi", ACCENT, false);
         privacy.setOnClickListener(v ->
@@ -185,6 +236,21 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        update();
+        uiHandler.removeCallbacks(uiRefresh);
+        uiHandler.postDelayed(uiRefresh, 3000);
+    }
+
+    @Override
+    protected void onPause() {
+        uiHandler.removeCallbacks(uiRefresh);
+        super.onPause();
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions,
+                                           int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         update();
     }
 
@@ -371,25 +437,36 @@ public class MainActivity extends Activity {
     // ---------- aksi & status ----------
 
     private void testVoice() {
-        if (pickerTts == null) {
+        if (pickerTts == null || !pickerReady) {
             Toast.makeText(this, "TTS belum siap", Toast.LENGTH_SHORT).show();
             return;
         }
         String sel = voiceSp.getSelectedItem() == null
                 ? "" : voiceSp.getSelectedItem().toString();
         Voice vv = voiceMap.get(sel);
-        if (vv != null) {
-            try {
+        try {
+            if (vv != null) {
                 pickerTts.setVoice(vv);
-            } catch (Exception e) {
-                Log.w("NotifBaca", "setVoice gagal", e);
+            } else {
+                // "Automatis" jangan diam-diam memakai voice terakhir yang
+                // dipilih saat tes sebelumnya.
+                pickerTts.setLanguage(java.util.Locale.getDefault());
             }
+            int r = pickerTts.speak("Halo, ini contoh suara yang dipilih.",
+                    TextToSpeech.QUEUE_FLUSH, null, "nbtest");
+            if (r == TextToSpeech.ERROR) {
+                Toast.makeText(this, "Gagal memutar suara", Toast.LENGTH_SHORT).show();
+            }
+        } catch (Exception e) {
+            Log.w("NotifBaca", "tes suara gagal", e);
+            Toast.makeText(this, "Gagal memutar suara", Toast.LENGTH_SHORT).show();
         }
-        pickerTts.speak("Halo, ini contoh suara yang dipilih.",
-                TextToSpeech.QUEUE_FLUSH, null, "nbtest");
     }
 
     private void save() {
+        String sel = voiceSp.getSelectedItem() == null
+                ? "" : voiceSp.getSelectedItem().toString();
+        Voice v = voiceMap.get(sel);
         sp.edit()
                 .putString("block", block.getText().toString().trim())
                 .putString("btonly", btOnly.isChecked() ? "1" : "")
@@ -398,10 +475,8 @@ public class MainActivity extends Activity {
                 .putString("summary", summaryCb.isChecked() ? "1" : "")
                 .putString("summarytime", summaryEdit.getText().toString().trim())
                 .putString("summaryLast", "")
-                .putString("voice", voiceSp.getSelectedItemPosition() == 0
-                        ? ""
-                        : voiceMap.containsKey(voiceSp.getSelectedItem().toString())
-                        ? voiceMap.get(voiceSp.getSelectedItem().toString()).getName() : "")
+                .putString("showall", voiceAll.isChecked() ? "1" : "")
+                .putString("voice", v == null ? "" : v.getName())
                 .apply();
         Toast.makeText(this, "Disimpan", Toast.LENGTH_SHORT).show();
     }
@@ -437,17 +512,42 @@ public class MainActivity extends Activity {
             if (savedVoice.equals(v.getName())) sel = idx;
             idx++;
         }
+        // Voice tersimpan bisa non-Indonesia. Kalau daftar sedang difilter,
+        // tampilkan semua supaya UI tidak menampilkan "Automatis" padahal
+        // NLS masih memakai voice tersimpan itu.
+        if (sel == 0 && !savedVoice.isEmpty() && !all) {
+            voiceAll.setChecked(true);
+            return;
+        }
         ((ArrayAdapter) voiceSp.getAdapter()).notifyDataSetChanged();
         voiceSp.setSelection(Math.min(sel, voiceNames.size() - 1));
     }
 
     @Override
     protected void onDestroy() {
+        uiHandler.removeCallbacks(uiRefresh);
+        pickerReady = false;
         if (pickerTts != null) {
-            pickerTts.stop();
-            pickerTts.shutdown();
+            try {
+                pickerTts.stop();
+                pickerTts.shutdown();
+            } catch (Exception e) {
+                Log.w("NotifBaca", "shutdown picker TTS gagal", e);
+            }
+            pickerTts = null;
         }
         super.onDestroy();
+    }
+
+    private boolean postNotifOk() {
+        return Build.VERSION.SDK_INT < 33
+                || checkSelfPermission("android.permission.POST_NOTIFICATIONS")
+                == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private boolean batteryOk() {
+        PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+        return pm == null || pm.isIgnoringBatteryOptimizations(getPackageName());
     }
 
     private void update() {
@@ -457,7 +557,8 @@ public class MainActivity extends Activity {
         // Izin ada belum tentu layanan jalan (dibunuh battery-saver / putus
         // bind). NLS menulis cap last_hb tiap 15 detik saat masih hidup.
         long lastHb = sp.getLong("last_hb", 0);
-        boolean hidup = izin && (System.currentTimeMillis() - lastHb < 30000);
+        boolean hidup = izin && NLS.isAlive() && NLS.isConnected()
+                && (System.currentTimeMillis() - lastHb < 30000);
         if (!izin) {
             statusDot.setBackground(dot(AMBER_NEED));
             status.setTextColor(AMBER_NEED);
@@ -467,19 +568,74 @@ public class MainActivity extends Activity {
             statusDot.setBackground(dot(GREEN_OK));
             status.setTextColor(GREEN_OK);
             status.setText("Sistem aktif");
-            statusSub.setText("Notifikasi yang masuk dibacakan otomatis");
+            StringBuilder sub = new StringBuilder("Notifikasi yang masuk dibacakan otomatis");
+            if (!batteryOk()) {
+                sub.append("\nBaterai masih mengoptimalkan — tekan \"Izinkan latar belakang\".");
+            }
+            if (!postNotifOk()) {
+                sub.append("\nIzin notifikasi status belum aktif.");
+            }
+            statusSub.setText(sub);
         } else {
             statusDot.setBackground(dot(AMBER_NEED));
             status.setTextColor(AMBER_NEED);
             status.setText("Izin ok, layanan belum jalan");
-            statusSub.setText("Tekan \"Sambung ulang layanan\"; "
-                    + "matikan battery-saver/autostart-block buat NotifBaca");
+            StringBuilder sub = new StringBuilder(
+                    "Tekan \"Sambung ulang layanan\"; matikan battery-saver/autostart-block.");
+            if (!batteryOk()) {
+                sub.append("\nTekan \"Izinkan latar belakang (baterai)\".");
+            }
+            statusSub.setText(sub);
+        }
+    }
+
+    private void requestBatteryExemption() {
+        if (batteryOk()) {
+            Toast.makeText(this, "NotifBaca sudah dikecualikan dari optimasi baterai",
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+        try {
+            Intent i = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                    Uri.parse("package:" + getPackageName()));
+            startActivity(i);
+        } catch (Exception e) {
+            Log.w("NotifBaca", "dialog baterai gagal, buka daftar", e);
+            try {
+                startActivity(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
+            } catch (Exception e2) {
+                Toast.makeText(this, "Buka pengaturan baterai secara manual",
+                        Toast.LENGTH_SHORT).show();
+            }
+        }
+    }
+
+    private void openNotificationSettings() {
+        try {
+            Intent i = new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                    .putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName());
+            startActivity(i);
+        } catch (Exception e) {
+            Log.w("NotifBaca", "pengaturan notifikasi gagal", e);
+            Toast.makeText(this, "Buka pengaturan notifikasi secara manual",
+                    Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void openAppDetails() {
+        try {
+            startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:" + getPackageName())));
+        } catch (Exception e) {
+            Log.w("NotifBaca", "info aplikasi gagal", e);
+            Toast.makeText(this, "Buka Settings > Apps > NotifBaca", Toast.LENGTH_SHORT).show();
         }
     }
 
     // Paksa sistem bind ulang listener. Perlu di ROM agresif (Transsion
     // dkk) yang sering memutus service walau izin masih tercatat.
     private void reconnect() {
+        RebindJobService.schedule(this);
         try {
             ComponentName cn = new ComponentName(this, NLS.class);
             getPackageManager().setComponentEnabledSetting(cn,
@@ -508,10 +664,14 @@ public class MainActivity extends Activity {
                         "Kita baca notifikasi yang masuk dan membacakannya dengan suara "
                         + "lewat TTS, ideal buat dipakai di jalan lewat TWS.\n\n"
                         + "Supaya berfungsi, aplikasi butuh izin berikut:\n"
-                        + "1. Akses notifikasi — biar tahu notif masuk. Isinya HANYA dibacakan "
-                        + "lokal, tidak dikirim ke mana pun.\n"
-                        + "2. Izin notifikasi sistem (Android 13+) — untuk menjaga layanan "
-                        + "tetap aktif.\n\n"
+                        + "1. Akses notifikasi — biar tahu notif masuk. Isinya HANYA diproses "
+                        + "lokal; pilih voice offline kalau tidak ingin mesin TTS network "
+                        + "mengirim teks ke penyedia voice.\n"
+                        + "2. Izin notifikasi sistem (Android 13+) — untuk menampilkan status "
+                        + "layanan.\n"
+                        + "3. Pengecualian optimasi baterai — supaya layanan tidak dibunuh "
+                        + "saat aplikasi tidak dibuka. Di Infinix/Transsion, izinkan juga "
+                        + "Autostart lewat pengaturan aplikasi.\n\n"
                         + "Pengaturan: akses notifikasi dibuka lewat \"Buka akses notifikasi\" "
                         + "di bawah. Kamu juga bisa blokir aplikasi tertentu, "
                         + "jeda, atau baca hanya saat Bluetooth aktif.")

@@ -15,16 +15,19 @@ public class BootReceiver extends BroadcastReceiver {
     public void onReceive(Context ctx, Intent intent) {
         if (intent == null) return;
         String a = intent.getAction();
-        if (!Intent.ACTION_BOOT_COMPLETED.equals(a)
-                && !"android.intent.action.QUICKBOOT_POWERON".equals(a)) return;
-        Log.i("NotifBaca", "boot, minta rebind NLS");
+        boolean boot = Intent.ACTION_BOOT_COMPLETED.equals(a)
+                || "android.intent.action.QUICKBOOT_POWERON".equals(a);
+        boolean updated = Intent.ACTION_MY_PACKAGE_REPLACED.equals(a);
+        if (!boot && !updated) return;
+        Log.i("NotifBaca", (boot ? "boot" : "update app") + ", minta rebind NLS");
+        RebindJobService.schedule(ctx);
         try {
             ComponentName cn = new ComponentName(ctx, NLS.class);
             if (Build.VERSION.SDK_INT >= 24) {
                 NotificationListenerService.requestRebind(cn);
             }
         } catch (Exception e) {
-            Log.e("NotifBaca", "rebind boot gagal", e);
+            Log.e("NotifBaca", "rebind gagal", e);
         }
     }
 }

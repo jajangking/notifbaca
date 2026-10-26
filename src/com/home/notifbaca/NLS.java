@@ -5,13 +5,17 @@ import android.service.notification.StatusBarNotification;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
+import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.media.AudioAttributes;
 import android.media.AudioDeviceInfo;
 import android.media.AudioFocusRequest;
 import android.media.AudioManager;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
@@ -42,8 +46,26 @@ public class NLS extends NotificationListenerService {
     private static final long CATCHUP_MAX_AGE = 120000;
     private static final int CATCHUP_MAX_COUNT = 3;
 
+    // Dipakai RebindJobService dan UI (satu proses) untuk membedakan
+    // "layanan masih hidup" dari "proses baru hidup karena job, tapi NLS
+    // belum ter-bind". sConnected khusus status listener.
+    private static volatile boolean sAlive;
+    private static volatile boolean sConnected;
+
+    static boolean isAlive() {
+        return sAlive;
+    }
+
+    static boolean isConnected() {
+        return sConnected;
+    }
+
     private TextToSpeech tts;
     private PowerManager.WakeLock wl;
+    private PowerManager powerManager;
+    private PowerManager.WakeLock cpuWl;
+    private BroadcastReceiver screenReceiver;
+    private boolean holdCpu;
     private HandlerThread ttsThread;
     private Handler ttsHandler;
     private Handler mainHandler;
@@ -54,10 +76,15 @@ public class NLS extends NotificationListenerService {
     private volatile boolean destroyed;
     private long lastClockMin = -1;
     private static final int MAX_SPEAK_QUEUE = 10;
+    private static final int TTS_INIT_MAX = 6;
+    private static final long TTS_RETRY_MS = 15000;
     private final java.util.concurrent.ConcurrentLinkedQueue<String> speakQueue =
             new java.util.concurrent.ConcurrentLinkedQueue<>();
     private volatile boolean ttsReady;
     private volatile boolean ttsSpeaking;
+    private int ttsInitAttempts;
+    private int ttsInitGeneration;
+    private int fgAttempts;
     private final Set<String> recent = new HashSet<>();
     private final java.util.List<String> summaryLog = new java.util.ArrayList<>();
 
@@ -81,16 +108,42 @@ public class NLS extends NotificationListenerService {
     public void onCreate() {
         super.onCreate();
         Log.i(TAG, "onCreate");
+        sAlive = true;
+        sConnected = false;
         loadSpoken();
         initChannel();
         startFg();
         PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        powerManager = pm;
         wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "NotifBaca:speak");
         wl.setReferenceCounted(false);
         ttsThread = new HandlerThread("tts");
         ttsThread.start();
         ttsHandler = new Handler(ttsThread.getLooper());
         mainHandler = new Handler(android.os.Looper.getMainLooper());
+        // Opsional (default aktif): tahan CPU saat layar mati supaya callback
+        // notifikasi tidak ikut tertidur. Tanpa ini proses memang hidup, tapi
+        // handler baru jalan lagi saat layar/app dibuka — persis gejala
+        // "layanan mati kalau tidak dibuka". Bisa dimatikan di UI.
+        holdCpu = "1".equals(getSharedPreferences(PREF, MODE_PRIVATE)
+                .getString("holdcpu", "1"));
+        cpuWl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "NotifBaca:cpu");
+        cpuWl.setReferenceCounted(false);
+        screenReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                updateCpuWakeLock();
+            }
+        };
+        try {
+            IntentFilter f = new IntentFilter();
+            f.addAction(Intent.ACTION_SCREEN_ON);
+            f.addAction(Intent.ACTION_SCREEN_OFF);
+            registerReceiver(screenReceiver, f);
+        } catch (Exception e) {
+            Log.w(TAG, "register receiver layar gagal", e);
+        }
+        updateCpuWakeLock();
         startHeartbeat();
         am = (AudioManager) getSystemService(AUDIO_SERVICE);
         // USAGE_MEDIA: TTS main di stream media, jadi keras lemahnya ikut
@@ -108,54 +161,107 @@ public class NLS extends NotificationListenerService {
                 .setAudioAttributes(ttsAudio)
                 .setOnAudioFocusChangeListener(f -> Log.i(TAG, "focus berubah: " + f))
                 .build();
-        tts = new TextToSpeech(this, status -> {
-            if (status == TextToSpeech.SUCCESS) {
-                String saved = getSharedPreferences(PREF, MODE_PRIVATE).getString("voice", "");
-                if (saved != null && !saved.isEmpty()) {
-                    java.util.Set<Voice> vs = tts.getVoices();
-                    if (vs != null) {
-                        for (Voice vo : vs) {
-                            if (vo != null && saved.equals(vo.getName())) {
-                                try {
-                                    tts.setVoice(vo);
-                                } catch (Exception e) {
-                                    Log.e(TAG, "setVoice gagal, fallback default", e);
-                                    tts.setLanguage(Locale.getDefault());
-                                }
-                                break;
+        initTts();
+        startMinuteTicker();
+        RebindJobService.schedule(this);
+    }
+
+    // TTS bisa gagal init kalau engine belum siap setelah boot. Dulu kegagalan
+    // ini didiamkan: ttsReady tetap false dan semua notifikasi menumpuk hilang.
+    private void initTts() {
+        if (destroyed || ttsInitAttempts >= TTS_INIT_MAX) return;
+        final int gen = ++ttsInitGeneration;
+        ttsInitAttempts++;
+        if (tts != null) {
+            try {
+                tts.shutdown();
+            } catch (Exception e) {
+                Log.w(TAG, "shutdown TTS lama gagal", e);
+            }
+            tts = null;
+        }
+        try {
+            tts = new TextToSpeech(this, status -> {
+                if (destroyed || gen != ttsInitGeneration) return;
+                if (status != TextToSpeech.SUCCESS) {
+                    ttsReady = false;
+                    Log.e(TAG, "init TTS gagal status=" + status
+                            + " (percobaan " + ttsInitAttempts + "/" + TTS_INIT_MAX + ")");
+                    mainHandler.postDelayed(this::initTts, TTS_RETRY_MS);
+                    return;
+                }
+                try {
+                    configureTts();
+                    ttsInitAttempts = 0;
+                    ttsReady = true;
+                    drainQueue();
+                } catch (Exception e) {
+                    ttsReady = false;
+                    Log.e(TAG, "konfigurasi TTS gagal", e);
+                    mainHandler.postDelayed(this::initTts, TTS_RETRY_MS);
+                }
+            });
+        } catch (Exception e) {
+            ttsReady = false;
+            Log.e(TAG, "TextToSpeech gagal dibuat", e);
+            mainHandler.postDelayed(this::initTts, TTS_RETRY_MS);
+        }
+    }
+
+    private void configureTts() {
+        String saved = getSharedPreferences(PREF, MODE_PRIVATE).getString("voice", "");
+        boolean voiceFound = false;
+        if (saved != null && !saved.isEmpty()) {
+            try {
+                java.util.Set<Voice> vs = tts.getVoices();
+                if (vs != null) {
+                    for (Voice vo : vs) {
+                        if (vo != null && saved.equals(vo.getName())) {
+                            try {
+                                tts.setVoice(vo);
+                                voiceFound = true;
+                            } catch (Exception e) {
+                                Log.e(TAG, "setVoice gagal, fallback default", e);
                             }
+                            break;
                         }
                     }
-                } else {
-                    tts.setLanguage(Locale.getDefault());
                 }
-                tts.setAudioAttributes(ttsAudio);
-                tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
-                    @Override
-                    public void onStart(String utteranceId) {
-                    }
+            } catch (Exception e) {
+                Log.w(TAG, "getVoices gagal", e);
+            }
+        }
+        // Kalau voice tersimpan sudah tidak ada (engine berubah), jangan diam
+        // memakai voice bawaan yang mungkin berbahasa lain.
+        if (!voiceFound) {
+            int r = tts.setLanguage(Locale.getDefault());
+            if (r == TextToSpeech.LANG_MISSING_DATA
+                    || r == TextToSpeech.LANG_NOT_SUPPORTED) {
+                Log.w(TAG, "bahasa default tidak didukung TTS");
+            }
+        }
+        tts.setAudioAttributes(ttsAudio);
+        tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+            @Override
+            public void onStart(String utteranceId) {
+            }
 
-                    @Override
-                    public void onDone(String utteranceId) {
-                        speakDone();
-                    }
+            @Override
+            public void onDone(String utteranceId) {
+                speakDone();
+            }
 
-                    @Override
-                    @Deprecated
-                    public void onError(String utteranceId) {
-                        speakDone();
-                    }
+            @Override
+            @Deprecated
+            public void onError(String utteranceId) {
+                speakDone();
+            }
 
-                    @Override
-                    public void onError(String utteranceId, int errorCode) {
-                        speakDone();
-                    }
-                });
-                ttsReady = true;
-                drainQueue();
+            @Override
+            public void onError(String utteranceId, int errorCode) {
+                speakDone();
             }
         });
-        startMinuteTicker();
     }
 
     private void startMinuteTicker() {
@@ -232,18 +338,45 @@ public class NLS extends NotificationListenerService {
         speakSimple(sb.toString().trim());
     }
 
+    private void updateCpuWakeLock() {
+        if (destroyed || cpuWl == null) return;
+        boolean want = holdCpu && sConnected && powerManager != null
+                && !powerManager.isInteractive();
+        try {
+            if (want && !cpuWl.isHeld()) {
+                cpuWl.acquire();
+                Log.i(TAG, "cpu_wl on");
+            } else if (!want && cpuWl.isHeld()) {
+                cpuWl.release();
+                Log.i(TAG, "cpu_wl off");
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "atur cpu_wl gagal", e);
+        }
+    }
+
+    private void writeHeartbeat() {
+        // Cap waktu hidup buat UI: bedakan "izin ada" vs "layanan jalan".
+        try {
+            getSharedPreferences(PREF, MODE_PRIVATE)
+                    .edit().putLong(KEY_LAST_HB, System.currentTimeMillis()).apply();
+        } catch (Exception e) {
+            Log.w(TAG, "tulis last_hb gagal", e);
+        }
+    }
+
     private void startHeartbeat() {
         mainHandler.postDelayed(new Runnable() {
             @Override
             public void run() {
+                if (destroyed) return;
                 Log.i(TAG, "hb " + (++hbCount));
-                // Cap waktu hidup buat UI: bedakan "izin ada" vs "layanan jalan".
-                try {
-                    getSharedPreferences(PREF, MODE_PRIVATE)
-                            .edit().putLong(KEY_LAST_HB, System.currentTimeMillis()).apply();
-                } catch (Exception e) {
-                    Log.w(TAG, "tulis last_hb gagal", e);
-                }
+                writeHeartbeat();
+                // Baca ulang preferensi: user bisa mematikan mode andal tanpa
+                // restart layanan.
+                holdCpu = "1".equals(getSharedPreferences(PREF, MODE_PRIVATE)
+                        .getString("holdcpu", "1"));
+                updateCpuWakeLock();
                 mainHandler.postDelayed(this, 15000);
             }
         }, 15000);
@@ -252,29 +385,34 @@ public class NLS extends NotificationListenerService {
 
             @Override
             public void run() {
+                if (destroyed) return;
                 Log.i(TAG, "watch check");
-                StatusBarNotification[] all = null;
+                // Cukup cek binder listener masih hidup. Dulu kode ini juga
+                // mewajibkan notifikasi FGS id=1 terlihat; padahal notifikasi
+                // itu bisa disembunyikan sistem (POST_NOTIFICATIONS ditolak /
+                // channel MIN), sehingga watchdog salah membunuh proses terus-
+                // menerus dan layanan tampak mati sendiri saat app ditutup.
+                boolean connected = false;
                 try {
-                    all = getActiveNotifications();
+                    StatusBarNotification[] all = getActiveNotifications();
+                    if (all != null) {
+                        connected = true;
+                        Log.i(TAG, "watch ok, aktif=" + all.length);
+                    } else {
+                        Log.e(TAG, "watch: getActiveNotifications null");
+                    }
                 } catch (Exception e) {
                     Log.e(TAG, "watch conn mati: " + e);
                 }
-                boolean alive = false;
-                if (all != null) {
-                    Log.i(TAG, "watch aktif=" + all.length);
-                    for (StatusBarNotification s : all) {
-                        if ("com.home.notifbaca".equals(s.getPackageName()) && s.getId() == 1) {
-                            alive = true;
-                            break;
-                        }
-                    }
-                }
-                if (alive) {
+                if (connected) {
+                    sConnected = true;
                     fails = 0;
                 } else {
+                    sConnected = false;
                     fails++;
                     Log.e(TAG, "watch gagal ke-" + fails + " (butuh 4 beruntun buat kill)");
                 }
+                updateCpuWakeLock();
                 if (fails >= 4) {
                     Log.e(TAG, "watch conn drop 4x, kill proses biar sistem rebind");
                     Process.killProcess(Process.myPid());
@@ -286,19 +424,37 @@ public class NLS extends NotificationListenerService {
     }
 
     private void initChannel() {
+        // LOW, bukan MIN: channel MIN bisa disembunyikan ROM dan membuat
+        // status layanan tidak terlihat. Tidak ada suara karena importance LOW.
         NotificationChannel c = new NotificationChannel(
-                CHANNEL, "Pembaca notifikasi", NotificationManager.IMPORTANCE_MIN);
+                CHANNEL, "Pembaca notifikasi", NotificationManager.IMPORTANCE_LOW);
+        c.setShowBadge(false);
         getSystemService(NotificationManager.class).createNotificationChannel(c);
     }
 
     private void startFg() {
-        Notification n = new Notification.Builder(this, CHANNEL)
-                .setContentTitle("NotifBaca aktif")
-                .setContentText("Notifikasi bakal dibacakan otomatis")
-                .setSmallIcon(android.R.drawable.ic_media_play)
-                .setOngoing(true)
-                .build();
-        startForeground(1, n);
+        if (fgAttempts >= 5) {
+            Log.e(TAG, "startForeground gagal 5x, menyerah sampai rebind berikutnya");
+            return;
+        }
+        fgAttempts++;
+        try {
+            Notification n = new Notification.Builder(this, CHANNEL)
+                    .setContentTitle("NotifBaca aktif")
+                    .setContentText("Notifikasi bakal dibacakan otomatis")
+                    .setSmallIcon(android.R.drawable.ic_media_play)
+                    .setOngoing(true)
+                    .setShowWhen(false)
+                    .setCategory(Notification.CATEGORY_SERVICE)
+                    .build();
+            startForeground(1, n);
+            fgAttempts = 0;
+        } catch (Exception e) {
+            // Jangan biarkan service mati hanya karena FGS ditolak sistem.
+            // Listener tetap bisa jalan sebagai bound service; coba lagi nanti.
+            Log.e(TAG, "startForeground gagal (percobaan " + fgAttempts + ")", e);
+            if (fgAttempts < 5) mainHandler.postDelayed(this::startFg, 15000);
+        }
     }
 
     private boolean noise(String pkg) {
@@ -317,7 +473,20 @@ public class NLS extends NotificationListenerService {
         for (AudioDeviceInfo d : am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)) {
             int t = d.getType();
             if (t == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
-                    || t == AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
+                    || t == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+                    || t == AudioDeviceInfo.TYPE_HEARING_AID) {
+                return true;
+            }
+            // TWS modern (LE Audio) bisa muncul sebagai BLE headset/speaker,
+            // bukan A2DP/SCO. Tanpa ini opsi "hanya saat BT aktif" salah
+            // menganggap Bluetooth mati.
+            if (Build.VERSION.SDK_INT >= 31
+                    && (t == AudioDeviceInfo.TYPE_BLE_HEADSET
+                    || t == AudioDeviceInfo.TYPE_BLE_SPEAKER)) {
+                return true;
+            }
+            if (Build.VERSION.SDK_INT >= 33
+                    && t == AudioDeviceInfo.TYPE_BLE_BROADCAST) {
                 return true;
             }
         }
@@ -361,7 +530,12 @@ public class NLS extends NotificationListenerService {
     @Override
     public void onListenerConnected() {
         Log.i(TAG, "listener connected");
+        sConnected = true;
+        writeHeartbeat();
+        updateCpuWakeLock();
+        fgAttempts = 0;
         startFg();
+        RebindJobService.schedule(this);
         loadSpoken();
         try {
             StatusBarNotification[] all = getActiveNotifications();
@@ -384,6 +558,9 @@ public class NLS extends NotificationListenerService {
 
     public void onListenerDisconnected() {
         Log.e(TAG, "listener DISCONNECTED");
+        sConnected = false;
+        updateCpuWakeLock();
+        RebindJobService.schedule(this);
         // Self-heal: minta sistem bind ulang. Tanpa ini service diam
         // selamanya sampai user buka app (badge izin tetap hijau).
         try {
@@ -414,10 +591,17 @@ public class NLS extends NotificationListenerService {
 
     @Override
     public void onNotificationPosted(StatusBarNotification sbn) {
-        consider(sbn, false);
+        if (destroyed || sbn == null) return;
+        try {
+            consider(sbn, false);
+        } catch (Exception e) {
+            // Satu notifikasi aneh tidak boleh menjatuhkan seluruh listener.
+            Log.e(TAG, "proses notifikasi gagal", e);
+        }
     }
 
     private void consider(StatusBarNotification sbn, boolean catchUp) {
+        if (destroyed) return;
         String pkg = sbn.getPackageName();
         // Log ditulis setelah filter, bukan sebelum. Dulu baris "GOT" ditulis
         // lebih dulu sehingga notif yang ongoing/noise tetap terlihat seolah
@@ -452,17 +636,22 @@ public class NLS extends NotificationListenerService {
         }
         if (title.isEmpty() && text.isEmpty()) return;
 
+        // Cek blokir sebelum menandai "sudah dibaca". Dulu notifikasi dari
+        // package yang diblokir tetap dimasukkan ke recent/markSpoken.
+        SharedPreferences sp = getSharedPreferences(PREF, MODE_PRIVATE);
+        String[] blocked = sp.getString(KEY_BLOCK, "").split(",");
+        for (String b : blocked) {
+            if (b.trim().equalsIgnoreCase(pkg)) {
+                Log.i(TAG, "SKIP blokir " + pkg);
+                return;
+            }
+        }
+
         String key = stableKey(pkg + "|" + title + "|" + text);
         if (recent.contains(key)) return;
         if (recent.size() > 300) recent.clear();
         recent.add(key);
         markSpoken(key);
-
-        SharedPreferences sp = getSharedPreferences(PREF, MODE_PRIVATE);
-        String[] blocked = sp.getString(KEY_BLOCK, "").split(",");
-        for (String b : blocked) {
-            if (b.trim().equalsIgnoreCase(pkg)) return;
-        }
 
         String app = pkg;
         String[] parts = pkg.split("\\.");
@@ -473,8 +662,7 @@ public class NLS extends NotificationListenerService {
             while (summaryLog.size() > 60) summaryLog.remove(0);
         }
 
-        SharedPreferences sp2 = getSharedPreferences(PREF, MODE_PRIVATE);
-        if ("1".equals(sp2.getString("btonly", "")) && !btActive()) {
+        if ("1".equals(sp.getString("btonly", "")) && !btActive()) {
             Log.i(TAG, "BT mati, skip " + pkg);
             return;
         }
@@ -487,10 +675,11 @@ public class NLS extends NotificationListenerService {
     private void speakSimple(String text) {
         if (destroyed || text == null || text.isEmpty()) return;
         if ("1".equals(getSharedPreferences(PREF, MODE_PRIVATE).getString("muted", ""))) {
-            Log.i(TAG, "muted, skip: " + text);
+            // Jangan pernah menulis isi notifikasi ke logcat.
+            Log.i(TAG, "muted, skip len=" + text.length());
             return;
         }
-        Log.i(TAG, "SPEAKING: " + text);
+        Log.i(TAG, "SPEAKING len=" + text.length());
         enqueue(text);
         if (ttsReady) drainQueue();
     }
@@ -501,13 +690,22 @@ public class NLS extends NotificationListenerService {
     }
 
     private void drainQueue() {
-        if (destroyed || !ttsReady || ttsSpeaking) return;
+        if (destroyed || !ttsReady || ttsSpeaking || tts == null || ttsHandler == null) return;
         final String text = speakQueue.poll();
         if (text == null) return;
         ttsSpeaking = true;
-        if (wl != null && !wl.isHeld()) wl.acquire(10000);
+        // Tahan CPU sampai antrean selesai, bukan cuma 10 detik: notifikasi
+        // panjang bisa melewati 10 detik dan device sempat tidur di tengah baca.
+        if (wl != null && !wl.isHeld()) {
+            try {
+                wl.acquire(10 * 60 * 1000L);
+            } catch (Exception e) {
+                Log.w(TAG, "wakelock gagal", e);
+            }
+        }
         try {
             ttsHandler.post(() -> {
+                if (destroyed) return;
                 if (am != null && afr != null) {
                     int f = am.requestAudioFocus(afr);
                     Log.i(TAG, "request focus = " + f);
@@ -518,7 +716,12 @@ public class NLS extends NotificationListenerService {
                     mainHandler.postDelayed(focusFallback, 60000);
                 }
                 try {
-                    tts.speak(text, TextToSpeech.QUEUE_ADD, null, "n" + System.currentTimeMillis());
+                    int r = tts.speak(text, TextToSpeech.QUEUE_ADD, null,
+                            "n" + System.currentTimeMillis());
+                    if (r == TextToSpeech.ERROR) {
+                        Log.e(TAG, "tts.speak return ERROR");
+                        speakDone();
+                    }
                 } catch (Exception e) {
                     Log.e(TAG, "tts gagal", e);
                     speakDone();
@@ -527,6 +730,7 @@ public class NLS extends NotificationListenerService {
         } catch (Exception e) {
             Log.e(TAG, "tts gagal", e);
             ttsSpeaking = false;
+            releaseWakeLock();
         }
     }
 
@@ -534,17 +738,19 @@ public class NLS extends NotificationListenerService {
     // bukan dilepas dengan timer tetap. Kalau dilepas terlalu awal, musik
     // kembali ke nada penuh padahal NotifBaca masih bicara.
     private final Runnable focusFallback = () -> {
+        if (destroyed) return;
         Log.w(TAG, "onDone tidak datang, lepas focus paksa + reset antrean");
         // Dulu cuma releaseFocus(): kalau onDone/onError tidak pernah datang
         // (network voice mati, engine sibuk saat Doze), ttsSpeaking macet
         // true selamanya dan semua notif berikutnya diam sampai restart.
         ttsSpeaking = false;
         releaseFocus();
+        releaseWakeLock();
         drainQueue();
     };
 
     private void releaseFocus() {
-        mainHandler.removeCallbacks(focusFallback);
+        if (mainHandler != null) mainHandler.removeCallbacks(focusFallback);
         if (am == null || afr == null) return;
         try {
             am.abandonAudioFocusRequest(afr);
@@ -553,12 +759,26 @@ public class NLS extends NotificationListenerService {
         }
     }
 
+    private void releaseWakeLock() {
+        if (wl == null || !wl.isHeld()) return;
+        try {
+            wl.release();
+        } catch (Exception e) {
+            Log.w(TAG, "release wakelock gagal", e);
+        }
+    }
+
     private void speakDone() {
+        if (destroyed || mainHandler == null) return;
         mainHandler.post(() -> {
+            if (destroyed) return;
             ttsSpeaking = false;
             // Kalau antrean sudah kosong, musik boleh lanjut. Kalau masih ada,
             // focus ditahan supaya tidak ada jeda di antara dua notifikasi.
-            if (speakQueue.isEmpty()) releaseFocus();
+            if (speakQueue.isEmpty()) {
+                releaseFocus();
+                releaseWakeLock();
+            }
             drainQueue();
         });
     }
@@ -566,12 +786,46 @@ public class NLS extends NotificationListenerService {
     @Override
     public void onDestroy() {
         Log.e(TAG, "onDestroy");
+        sAlive = false;
+        sConnected = false;
         destroyed = true;
+        ttsReady = false;
+        ttsInitGeneration++;
+        // Hentikan heartbeat/watch/tick. Tanpa ini last_hb terus diperbarui
+        // walau service sudah mati, dan UI salah bilang "Sistem aktif".
+        if (mainHandler != null) mainHandler.removeCallbacksAndMessages(null);
+        if (screenReceiver != null) {
+            try {
+                unregisterReceiver(screenReceiver);
+            } catch (Exception e) {
+                Log.w(TAG, "unregister receiver layar gagal", e);
+            }
+            screenReceiver = null;
+        }
         releaseFocus();
+        releaseWakeLock();
+        if (cpuWl != null && cpuWl.isHeld()) {
+            try {
+                cpuWl.release();
+            } catch (Exception e) {
+                Log.w(TAG, "release cpu_wl gagal", e);
+            }
+        }
+        cpuWl = null;
+        try {
+            stopForeground(STOP_FOREGROUND_REMOVE);
+        } catch (Exception e) {
+            Log.w(TAG, "stopForeground gagal", e);
+        }
         if (ttsThread != null) ttsThread.quitSafely();
         if (tts != null) {
-            tts.stop();
-            tts.shutdown();
+            try {
+                tts.stop();
+                tts.shutdown();
+            } catch (Exception e) {
+                Log.w(TAG, "shutdown TTS gagal", e);
+            }
+            tts = null;
         }
         super.onDestroy();
     }
