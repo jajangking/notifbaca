@@ -32,7 +32,13 @@ public class Widget extends AppWidgetProvider {
         boolean on = NLS.isAlive() && NLS.isConnected();
         RemoteViews views = new RemoteViews(context.getPackageName(),
                 R.layout.widget_notifbaca);
+
         views.setTextViewText(R.id.widget_status, context.getString(
+                on ? R.string.widget_on : R.string.widget_off));
+        views.setTextColor(R.id.widget_status, on ? 0xFFB4C6DD : 0xFFFFC9BD);
+        views.setInt(R.id.widget_dot, "setBackgroundResource",
+                on ? R.drawable.widget_dot_on : R.drawable.widget_dot_off);
+        views.setContentDescription(R.id.widget_root, context.getString(
                 on ? R.string.widget_on : R.string.widget_off));
 
         Intent open = new Intent(context, MainActivity.class);

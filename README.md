@@ -11,7 +11,7 @@ Package `com.home.notifbaca`, minSdk 26 / targetSdk 33. UI, log, dan commit berb
 - Filter: hanya saat Bluetooth aktif (termasuk LE Audio), jeda sementara, blokir package
 - Quick Settings tile "Jeda Baca"
 - Rebind otomatis: watchdog di layanan + JobScheduler periodik kalau proses dibunuh ROM
-- Widget pelindung untuk ROM Infinix/Transsion (`Usf_Hiber`) agar layanan tidak dibekukan saat app ditinggalkan
+- Widget pelindung 2x1 untuk ROM Infinix/Transsion (`Usf_Hiber`) agar layanan tidak dibekukan saat app ditinggalkan, lengkap dengan status aktif
 - Mode andal: menahan CPU saat layar mati supaya notifikasi tidak tertunda (bisa dimatikan, baterai lebih boros)
 - Tombol izin battery optimization + status izin notifikasi
 - Halaman Tentang & Kebijakan Privasi di dalam app
