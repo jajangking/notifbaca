@@ -42,15 +42,53 @@ uji di perangkat, lalu laporkan hasilnya ke pengguna.
      di thread `ttsHandler`, daftar suara di thread `ui-voices`, dan rescan
      notifikasi di thread `nls-rescan`; main thread tetap bisa heartbeat
      dan menerima callback notifikasi.
+  9. **Probe watchdog async** (v1.0.4): perbaikan #8 sempat membuang probe
+     binder watchdog sama sekali (`connected = sConnected`), sehingga
+     watchdog buta terhadap binder yang mati diam-diam tanpa
+     `onListenerDisconnected()`. Sekarang probe `getActiveNotifications()`
+     dikembalikan tapi jalan di thread `nls-watch` (`launchWatchProbe()`),
+     hasil dinilai di main thread (`onWatchProbeResult()`). Probe yang
+     belum balik dalam 12 detik dihitung gagal. Jangan pindahkan probe ke
+     main thread, jangan buang probe lagi.
 - Branch: `arena/e481637c-notifbaca`
 - Commit perbaikan awal: `e9ec3e7` ("Perbaiki layanan sering mati di Android 16")
-- Hasil build yang benar: `versionCode 4`, `versionName 1.0.3`
-- Status verifikasi: sudah diuji di **Infinix X6855, Android 16 (SDK 36)**
-  dengan layar tetap menyala. Hasil: di background 45–90 detik heartbeat
-  dan `watch ok` terus jalan, `cgroup.freeze=0`, notifikasi uji masuk dan
+- Hasil build yang benar **saat ini**: `versionCode 5`, `versionName 1.0.4`
+- Status verifikasi: v1.0.3 sudah diuji di **Infinix X6855, Android 16
+  (SDK 36)** dengan layar tetap menyala. Hasil: di background 45–90 detik
+  heartbeat terus jalan, `cgroup.freeze=0`, notifikasi uji masuk dan
   `SPEAKING`. Widget pelindung sudah dipasang di layar utama perangkat uji.
-  **Belum diuji ulang**: layar mati, reboot, diusir dari recents, dan soak
-  baterai 1–2 jam — itu tugas pengujian lanjutan di dokumen ini.
+  v1.0.4 (probe watchdog async) **belum diuji di perangkat** — itu tugas
+  verifikasi putaran ini, lihat bagian "Tugas verifikasi saat ini".
+  Skenario layar mati, reboot, diusir dari recents, dan soak baterai
+  1–2 jam **dilewati dulu** atas instruksi pengguna.
+
+## Tugas verifikasi saat ini (v1.0.4) — kerjakan ini
+
+Pengguna meminta verifikasi langsung untuk perubahan v1.0.4 saja.
+Ruang lingkup putaran ini:
+
+1. Jalankan **Langkah 0–5** seperti biasa (ambil branch terbaru, build,
+   pastikan `versionCode='5' versionName='1.0.4'`, install menimpa,
+   widget pelindung tetap terpasang, status "Sistem aktif").
+2. Jalankan **hanya skenario A** (notif dasar, layar nyala) dari
+   Langkah 6, plus pantau log watchdog baru selama ±5 menit dengan app
+   di background (layar tetap menyala, jangan buka app) — lihat
+   Langkah 7. Yang wajib terlihat berulang: `watch check` diikuti
+   `watch probe ok, aktif=...`, heartbeat `hb` tetap jalan, dan
+   `SPEAKING` untuk notif uji. Yang **tidak boleh** muncul:
+   `watch: probe sebelumnya belum selesai`, `watch gagal ke-...`,
+   `watch conn drop 4x`, atau `FATAL EXCEPTION`.
+3. **Skenario B, C, D, E, dan F DILEWATI pada putaran ini.** Jangan
+   jalankan, dan jangan simpulkan apa pun soal perilaku layar mati /
+   reboot / recents / soak / freezer dari putaran ini.
+4. Laporkan dengan format di bagian "Format laporan ke pengguna",
+   dengan penyesuaian: skenario cukup A + hasil pantau probe watchdog.
+   Tambahkan satu baris eksplisit: "Skenario B–E+F dilewati sesuai
+   instruksi pengguna."
+5. Kalau probe watchdog bermasalah (muncul pola terlarang di poin 2),
+   **berhenti dan laporkan** dengan 10–20 baris log terkait. Jangan
+   memperbaiki sendiri dengan membuang probe atau memindahkannya ke
+   main thread.
 
 ## Aturan keras (jangan dilanggar)
 
@@ -118,13 +156,14 @@ Build sukses ditandai baris `Selesai: notifbaca.apk` dan output
 
 ```bash
 apksigner verify --print-certs notifbaca.apk        # sertifikat = keystore lama
-aapt2 dump badging notifbaca.apk | grep -E "^package:"   # versionCode='4' versionName='1.0.3'
+aapt2 dump badging notifbaca.apk | grep -E "^package:"   # versionCode='5' versionName='1.0.4'
 aapt2 dump xmltree notifbaca.apk --file AndroidManifest.xml | grep -i foreground
 ```
 
 Yang harus terlihat: `foregroundServiceType` bernilai mediaPlayback dan
-izin `FOREGROUND_SERVICE_MEDIA_PLAYBACK`. Kalau `versionCode` masih 3,
-berarti branch/kode yang ter-build salah — berhenti dan cek Langkah 0.
+izin `FOREGROUND_SERVICE_MEDIA_PLAYBACK`. Kalau `versionCode` masih 4
+atau lebih lama, berarti branch/kode yang ter-build salah — berhenti
+dan cek Langkah 0.
 
 ## Langkah 4 — Install menimpa versi lama
 
@@ -136,7 +175,7 @@ dulu** supaya izin akses notifikasi & pengaturan tidak hilang):
 termux-open notifbaca.apk
 
 # Opsi B: salin ke Download lalu buka dari file manager
-cp notifbaca.apk /sdcard/Download/NotifBaca-1.0.3.apk
+cp notifbaca.apk /sdcard/Download/NotifBaca-1.0.4.apk
 
 # Opsi C: kalau adb (wireless debugging/Shizuku/pairing) tersedia
 adb install -r notifbaca.apk
@@ -208,7 +247,7 @@ Shizuku. Jangan mengutak-atik cara lain yang butuh root.
 logcat -c
 logcat -s NotifBaca
 # Saring khusus tanda perbaikan bekerja / gagal:
-logcat -s NotifBaca | grep -E "masa tenggang|requestRebind|watch gagal|cpu_wl|startForeground gagal|job rebind|TTS belum siap|SPEAKING|listener|hb|GOT|Usf_Hiber"
+logcat -s NotifBaca | grep -E "watch|masa tenggang|requestRebind|cpu_wl|startForeground gagal|job rebind|TTS belum siap|SPEAKING|listener|hb|GOT|Usf_Hiber"
 ```
 
 | Pola log | Arti |
@@ -221,7 +260,10 @@ logcat -s NotifBaca | grep -E "masa tenggang|requestRebind|watch gagal|cpu_wl|st
 | `job rebind dihentikan sistem, stopReason=...` | Job kena kuota Android 16; catat nilainya di laporan |
 | `TTS belum siap, init ulang ...` lalu `SPEAKING` | Perbaikan #6 bekerja |
 | `GOT <package> len=...` lalu `SPEAKING len=...` | Notifikasi diterima dan dibacakan; catat package + panjang saja |
-| `hb` / `watch ok` tetap muncul tiap ±12–15 detik saat background | Proses tidak beku dan watchdog sehat |
+| `hb` tetap muncul tiap ±15 detik saat background | Proses tidak beku dan main thread sehat |
+| `watch check` diikuti `watch probe ok, aktif=...` tiap ±12 detik | Probe watchdog async (v1.0.4) bekerja: binder hidup dan tidak menggantung main thread |
+| `watch: probe sebelumnya belum selesai, dianggap gagal` | Binder `getActiveNotifications()` menggantung >12 detik; watchdog menghitungnya gagal — catat dan laporkan, jangan buang probe |
+| `watch probe: getActiveNotifications null` / `watch probe conn mati: ...` | Probe mendeteksi binder mati; harusnya diikuti `watch: requestRebind dikirim` lalu `listener connected` |
 | `Usf_Hiber/stateManager: freeze uid: <uid> ...` | **Gagal di ROM Transsion** — widget pelindung hilang/tidak terpasang; pasang ulang widget, jangan simpulkan layanan mati |
 | `cgroup.freeze` bernilai `1` saat background | UID dibekukan `Usf_Hiber`; cek widget pelindung dulu |
 | `FATAL EXCEPTION` / `Unable to create service` berulang | **Gagal** — kumpulkan stack trace, lapor pengguna |
@@ -241,11 +283,17 @@ adb shell cat /sys/fs/cgroup/apps/uid_$(adb shell dumpsys package com.home.notif
 
 ## Kriteria selesai
 
-**Berhasil** kalau: skenario A–D lulus, E tidak menunjukkan layanan mati
-atau boros baterai tidak wajar, F menunjukkan `cgroup.freeze=0` selama
-widget terpasang, dan tidak ada pola log "Gagal" di atas. Kalau F gagal
-karena widget hilang, itu bukan bug layanan — pasang ulang widget lalu
-ulangi F sebelum menyimpulkan.
+**Putaran ini (v1.0.4):** berhasil kalau APK `versionCode 5` terpasang
+menimpa, skenario A lulus, dan selama ±5 menit background (layar nyala)
+`watch probe ok` muncul berulang tanpa pola "Gagal" di atas. Skenario
+B–E+F dilewati sesuai instruksi pengguna dan tidak memengaruhi
+kesimpulan putaran ini.
+
+**Umum (putaran penuh, nanti):** berhasil kalau skenario A–D lulus, E
+tidak menunjukkan layanan mati atau boros baterai tidak wajar, F
+menunjukkan `cgroup.freeze=0` selama widget terpasang, dan tidak ada
+pola log "Gagal" di atas. Kalau F gagal karena widget hilang, itu bukan
+bug layanan — pasang ulang widget lalu ulangi F sebelum menyimpulkan.
 
 **Rollback** kalau layanan justru tidak jalan sama sekali: install lagi
 APK rilis v1.0.2 dari GitHub Releases (menimpa), atau build ulang dari
@@ -258,9 +306,12 @@ Akhiri tugas dengan laporan ringkas berisi:
 
 1. Perangkat & versi Android (`getprop ro.product.model`,
    `getprop ro.build.version.release`, `getprop ro.build.version.sdk`).
-2. APK terpasang: versionCode/versionName dari Langkah 3.
-3. Hasil tiap skenario A–F: lulus/gagal + 5–15 baris log pendukung
-   (tanpa isi notifikasi!).
+2. APK terpasang: versionCode/versionName dari Langkah 3 (putaran ini
+   harus `5` / `1.0.4`).
+3. Hasil skenario yang dijalankan: lulus/gagal + 5–15 baris log
+   pendukung (tanpa isi notifikasi!). Putaran ini cukup skenario A +
+   hasil pantau probe watchdog (`watch probe ok` dsb.), dan tulis
+   eksplisit bahwa skenario B–E+F dilewati sesuai instruksi pengguna.
 4. Status widget pelindung (terpasang/tidak) dan nilai `cgroup.freeze`
    saat app di background.
 5. Pola log penting yang ditemukan dari tabel Langkah 7 (terutama

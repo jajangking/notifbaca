@@ -99,6 +99,11 @@ public class NLS extends NotificationListenerService {
     private long cpuWlDeadlineElapsedMs;
     private long lastTtsReviveMs;
     private volatile boolean everConnected;
+    // State watchdog probe async: watchFails hanya disentuh main thread
+    // (lewat onWatchProbeResult), watchProbeInFlight dibaca/ditulis juga
+    // dari thread probe.
+    private int watchFails;
+    private volatile boolean watchProbeInFlight;
     private final Set<String> recent = new HashSet<>();
     private final java.util.List<String> summaryLog = new java.util.ArrayList<>();
 
@@ -429,59 +434,96 @@ public class NLS extends NotificationListenerService {
             }
         }, 15000);
         mainHandler.postDelayed(new Runnable() {
-            private int fails;
-
             @Override
             public void run() {
                 if (destroyed) return;
                 Log.i(TAG, "watch check");
-                // JANGAN panggil getActiveNotifications() di sini (main
-                // thread). Di Android 16 + ROM Transsion binder itu bisa
-                // menggantung saat app di background: watchdog memblokir main
-                // thread, semua callback notifikasi antre, dan baru diproses
-                // saat app dibuka. Cukup percaya callback
-                // onListenerConnected/onListenerDisconnected.
-                boolean connected = sConnected;
-                if (connected) {
-                    Log.i(TAG, "watch ok, connected");
-                    sConnected = true;
-                    everConnected = true;
-                    fails = 0;
-                } else {
-                    sConnected = false;
-                    long sejakCreate = SystemClock.elapsedRealtime() - createdElapsedMs;
-                    if (!everConnected && sejakCreate < WATCH_GRACE_MS) {
-                        // Belum pernah terhubung sejak onCreate dan binding
-                        // sistem memang bisa telat (boot/Doze/freezer di
-                        // Android 14-16). Dulu kondisi sehat ini dihitung
-                        // gagal: proses bunuh diri 48 detik setelah dibuat,
-                        // sebelum sempat di-bind, lalu berulang terus.
-                        Log.i(TAG, "watch: belum terhubung, masa tenggang bind ("
-                                + (sejakCreate / 1000) + "s)");
-                    } else {
-                        fails++;
-                        Log.e(TAG, "watch gagal ke-" + fails + " (butuh 4 beruntun buat kill)");
-                        if (fails == 2) {
-                            // Minta baik-baik dulu sebelum bunuh proses:
-                            // requestRebind memang API resmi buat ini.
-                            try {
-                                requestRebind(new ComponentName(NLS.this, NLS.class));
-                                Log.i(TAG, "watch: requestRebind dikirim");
-                            } catch (Exception e) {
-                                Log.e(TAG, "watch: requestRebind gagal", e);
-                            }
-                        }
-                    }
-                }
-                updateCpuWakeLock();
-                if (fails >= 4) {
-                    Log.e(TAG, "watch conn drop 4x, kill proses biar sistem rebind");
-                    Process.killProcess(Process.myPid());
-                    return;
-                }
+                // Probe binder dijalankan async; runnable ini hanya memicu
+                // dan menjadwalkan ulang, supaya main thread tidak pernah
+                // menunggu hasil binder.
+                launchWatchProbe();
                 mainHandler.postDelayed(this, 12000);
             }
         }, 12000);
+    }
+
+    // getActiveNotifications() adalah binder ke system_server yang bisa
+    // menggantung saat app di background (Android 16 + ROM Transsion), jadi
+    // JANGAN dipanggil di main thread — tapi jangan juga dibuang: tanpa
+    // probe, watchdog hanya percaya sConnected dan buta terhadap binder
+    // yang mati diam-diam tanpa onListenerDisconnected(). Polanya sama
+    // dengan rescanAsync(): ambil di thread sendiri, nilai di main thread.
+    private void launchWatchProbe() {
+        if (watchProbeInFlight) {
+            // Probe sebelumnya belum balik setelah 12 detik: binder sedang
+            // menggantung. Anggap gagal supaya jalur requestRebind/kill
+            // tetap berjalan; thread probe yang macet dibiarkan (daemon,
+            // mati bersama proses kalau watchdog akhirnya membunuh).
+            Log.e(TAG, "watch: probe sebelumnya belum selesai, dianggap gagal");
+            onWatchProbeResult(false);
+            return;
+        }
+        watchProbeInFlight = true;
+        Thread t = new Thread(() -> {
+            boolean ok = false;
+            try {
+                StatusBarNotification[] all = getActiveNotifications();
+                if (all != null) {
+                    ok = true;
+                    Log.i(TAG, "watch probe ok, aktif=" + all.length);
+                } else {
+                    Log.e(TAG, "watch probe: getActiveNotifications null");
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "watch probe conn mati: " + e);
+            }
+            watchProbeInFlight = false;
+            if (destroyed || mainHandler == null) return;
+            final boolean connected = ok;
+            mainHandler.post(() -> onWatchProbeResult(connected));
+        }, "nls-watch");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    // Penilaian hasil probe; selalu jalan di main thread.
+    private void onWatchProbeResult(boolean connected) {
+        if (destroyed) return;
+        if (connected) {
+            sConnected = true;
+            everConnected = true;
+            watchFails = 0;
+        } else {
+            sConnected = false;
+            long sejakCreate = SystemClock.elapsedRealtime() - createdElapsedMs;
+            if (!everConnected && sejakCreate < WATCH_GRACE_MS) {
+                // Belum pernah terhubung sejak onCreate dan binding
+                // sistem memang bisa telat (boot/Doze/freezer di
+                // Android 14-16). Dulu kondisi sehat ini dihitung
+                // gagal: proses bunuh diri 48 detik setelah dibuat,
+                // sebelum sempat di-bind, lalu berulang terus.
+                Log.i(TAG, "watch: belum terhubung, masa tenggang bind ("
+                        + (sejakCreate / 1000) + "s)");
+            } else {
+                watchFails++;
+                Log.e(TAG, "watch gagal ke-" + watchFails + " (butuh 4 beruntun buat kill)");
+                if (watchFails == 2) {
+                    // Minta baik-baik dulu sebelum bunuh proses:
+                    // requestRebind memang API resmi buat ini.
+                    try {
+                        requestRebind(new ComponentName(NLS.this, NLS.class));
+                        Log.i(TAG, "watch: requestRebind dikirim");
+                    } catch (Exception e) {
+                        Log.e(TAG, "watch: requestRebind gagal", e);
+                    }
+                }
+            }
+        }
+        updateCpuWakeLock();
+        if (watchFails >= 4) {
+            Log.e(TAG, "watch conn drop 4x, kill proses biar sistem rebind");
+            Process.killProcess(Process.myPid());
+        }
     }
 
     private void initChannel() {
