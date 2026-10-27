@@ -11,6 +11,7 @@ Package `com.home.notifbaca`, minSdk 26 / targetSdk 33. UI, log, dan commit berb
 - Filter: hanya saat Bluetooth aktif (termasuk LE Audio), jeda sementara, blokir package
 - Quick Settings tile "Jeda Baca"
 - Rebind otomatis: watchdog di layanan + JobScheduler periodik kalau proses dibunuh ROM
+- Widget pelindung untuk ROM Infinix/Transsion (`Usf_Hiber`) agar layanan tidak dibekukan saat app ditinggalkan
 - Mode andal: menahan CPU saat layar mati supaya notifikasi tidak tertunda (bisa dimatikan, baterai lebih boros)
 - Tombol izin battery optimization + status izin notifikasi
 - Halaman Tentang & Kebijakan Privasi di dalam app
@@ -24,6 +25,13 @@ lewat UI aplikasi.
 Setelah itu buka **"Izinkan latar belakang (baterai)"** dan, di Infinix/Transsion,
 izinkan juga **Autostart** lewat pengaturan aplikasi. Tanpa ini ROM agresif bisa
 membunuh layanan saat aplikasi tidak dibuka.
+
+Khusus Infinix/Transsion (XOS), tekan **"Pasang widget pelindung"** di bagian
+KEANDALAN lalu tambahkan widget NotifBaca ke layar utama. Layanan `Usf_Hiber`
+membekukan seluruh UID aplikasi beberapa detik setelah layar utama ditekan
+walaupun sudah foreground service; aplikasi yang punya widget di home screen
+dikecualikan. **Jangan hapus widget itu** selama memakai NotifBaca — tanpa widget,
+notifikasi berhenti dibaca saat aplikasi ditinggalkan.
 
 **Mode andal** (aktif secara default) menahan CPU saat layar mati supaya callback
 notifikasi tidak ikut tertidur. Ini membuat baterai lebih boros; matikan checkbox

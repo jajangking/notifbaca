@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="widget_desc">Status NotifBaca. Biarkan widget ini di layar utama supaya sistem Infinix/Transsion tidak membekukan layanan pembaca notifikasi.</string>
+    <string name="widget_label">NotifBaca</string>
+    <string name="widget_on">NotifBaca aktif</string>
+    <string name="widget_off">NotifBaca mati</string>
+</resources>

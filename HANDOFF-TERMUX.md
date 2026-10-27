@@ -29,12 +29,28 @@ uji di perangkat, lalu laporkan hasilnya ke pengguna.
      `getPendingJob()` dulu + flex 5 menit + log `stopReason`.
   6. Init TTS yang sudah menyerah (6× gagal) tidak pernah dicoba lagi.
      Sekarang dicoba lagi saat rebind / notif masuk (maks 1×/menit).
+  7. **Freezer ROM Transsion/Infinix**: `com.transsion.usf` (`Usf_Hiber`)
+     membekukan **seluruh UID** aplikasi ±5–10 detik setelah Home ditekan,
+     walaupun `NLS` sudah foreground service, battery-optimization sudah
+     dikecualikan, dan listener tetap ter-bind. Cek
+     `/sys/fs/cgroup/apps/uid_<uid>/cgroup.freeze` (1 = beku). Solusinya:
+     widget pelindung di home screen; USF memberi `importantReason=widget`
+     dan tidak membekukan UID. Widget **wajib tetap ada**.
+  8. **TTS binder di main thread**: `new TextToSpeech()`,
+     `configureTts()`/`getVoices()`, dan `getActiveNotifications()` bisa
+     menggantung saat engine/system sibuk. Sekarang inisialisasi TTS jalan
+     di thread `ttsHandler`, daftar suara di thread `ui-voices`, dan rescan
+     notifikasi di thread `nls-rescan`; main thread tetap bisa heartbeat
+     dan menerima callback notifikasi.
 - Branch: `arena/e481637c-notifbaca`
-- Commit perbaikan: `e9ec3e7` ("Perbaiki layanan sering mati di Android 16")
+- Commit perbaikan awal: `e9ec3e7` ("Perbaiki layanan sering mati di Android 16")
 - Hasil build yang benar: `versionCode 4`, `versionName 1.0.3`
-- Status verifikasi sejauh ini: lolos compile melawan `android.jar`
-  API 33 (identik dengan kode lama). **Belum pernah diuji di perangkat**
-  — itu tugasmu di sini.
+- Status verifikasi: sudah diuji di **Infinix X6855, Android 16 (SDK 36)**
+  dengan layar tetap menyala. Hasil: di background 45–90 detik heartbeat
+  dan `watch ok` terus jalan, `cgroup.freeze=0`, notifikasi uji masuk dan
+  `SPEAKING`. Widget pelindung sudah dipasang di layar utama perangkat uji.
+  **Belum diuji ulang**: layar mati, reboot, diusir dari recents, dan soak
+  baterai 1–2 jam — itu tugas pengujian lanjutan di dokumen ini.
 
 ## Aturan keras (jangan dilanggar)
 
@@ -48,6 +64,10 @@ uji di perangkat, lalu laporkan hasilnya ke pengguna.
 - Jangan mengubah invariant di `AGENTS.md` (fokus audio `GAIN_TRANSIENT`,
   FGS id=1 & channel `run`, masa tenggang watchdog, wake lock bertimeout,
   `allowBackup="false"`, dsb).
+- **Widget pelindung wajib ada di home screen** di Infinix/Transsion.
+  Jangan menghapus `Widget.java`, receiver `APPWIDGET_UPDATE`, atau widget
+  yang sudah dipasang. Tanpa widget, `Usf_Hiber` membekukan UID dan
+  notifikasi berhenti dibaca.
 - Jangan naikkan `targetSdkVersion` dalam tugas ini.
 - Semua artefak build (`.apk`, `obj/`, `dexout/`, `base.apk`,
   `unsigned.apk`, `*.idsig`) adalah gitignored — jangan commit.
@@ -62,7 +82,7 @@ cd ~/notifbaca        # sesuaikan dengan lokasi repo di perangkat
 git fetch origin
 git checkout arena/e481637c-notifbaca
 git pull origin arena/e481637c-notifbaca
-git log --oneline -2  # harus terlihat e9ec3e7 di paling atas (atau lebih baru)
+git log --oneline -3  # commit perbaikan terbaru, minimal setelah e9ec3e7
 ```
 
 Kalau repo belum ada: `git clone https://github.com/jajangking/notifbaca.git`
@@ -139,8 +159,21 @@ Buka aplikasi NotifBaca, pastikan:
    (lewat "Info aplikasi / autostart").
 5. Checkbox KEANDALAN "Tahan proses saat layar mati" tetap aktif,
    dan "Jeda sementara (dibisukan)" **tidak** aktif.
+6. Tekan **"Pasang widget pelindung"** di bagian KEANDALAN, lalu
+   **"Tambahkan ke Layar Utama"**. Pastikan status berubah menjadi
+   **"Widget pelindung: terpasang"**. Ini wajib di Infinix/Transsion;
+   tanpa widget, `Usf_Hiber` membekukan seluruh UID saat app ditinggalkan.
 
 ## Langkah 6 — Skenario pengujian
+
+Sebelum mulai, pastikan widget pelindung sudah terpasang di layar utama
+dan status di app menunjukkan **"Widget pelindung: terpasang"**. Di
+Infinix/Transsion, cek juga freezer setelah app ditinggalkan:
+
+```bash
+# ganti 10562 dengan UID dari: adb shell dumpsys package com.home.notifbaca | grep userId=
+adb shell cat /sys/fs/cgroup/apps/uid_10562/cgroup.freeze   # harus 0
+```
 
 Jalankan berurutan, catat hasil tiap skenario (lulus/gagal + log terkait):
 
@@ -156,6 +189,12 @@ Jalankan berurutan, catat hasil tiap skenario (lulus/gagal + log terkait):
 - **E. Tahan lama:** biarkan 1–2 jam (idealnya semalaman) tanpa membuka
   app, kirim notif uji berkala → tetap dibacakan; cek pemakaian baterai
   NotifBaca di Pengaturan tidak melonjak tidak wajar.
+- **F. Freezer ROM (khusus Infinix/Transsion):** pastikan widget masih
+  ada, tekan Home, tunggu 60 detik tanpa membuka app, lalu cek
+  `cgroup.freeze` = 0 dan log `hb`/`watch ok` masih muncul. Kalau
+  `cgroup.freeze` = 1 atau muncul `Usf_Hiber/stateManager: freeze uid`,
+  widget hilang/tidak terpasang — pasang ulang sebelum menyimpulkan
+  layanan mati.
 
 ## Langkah 7 — Pantau logcat
 
@@ -169,7 +208,7 @@ Shizuku. Jangan mengutak-atik cara lain yang butuh root.
 logcat -c
 logcat -s NotifBaca
 # Saring khusus tanda perbaikan bekerja / gagal:
-logcat -s NotifBaca | grep -E "masa tenggang|requestRebind|watch gagal|cpu_wl|startForeground gagal|job rebind|TTS belum siap|SPEAKING|listener"
+logcat -s NotifBaca | grep -E "masa tenggang|requestRebind|watch gagal|cpu_wl|startForeground gagal|job rebind|TTS belum siap|SPEAKING|listener|hb|GOT|Usf_Hiber"
 ```
 
 | Pola log | Arti |
@@ -181,6 +220,10 @@ logcat -s NotifBaca | grep -E "masa tenggang|requestRebind|watch gagal|cpu_wl|st
 | `cpu_wl on` / `cpu_wl diperbarui` / `cpu_wl off` | Perbaikan #4 bekerja |
 | `job rebind dihentikan sistem, stopReason=...` | Job kena kuota Android 16; catat nilainya di laporan |
 | `TTS belum siap, init ulang ...` lalu `SPEAKING` | Perbaikan #6 bekerja |
+| `GOT <package> len=...` lalu `SPEAKING len=...` | Notifikasi diterima dan dibacakan; catat package + panjang saja |
+| `hb` / `watch ok` tetap muncul tiap ±12–15 detik saat background | Proses tidak beku dan watchdog sehat |
+| `Usf_Hiber/stateManager: freeze uid: <uid> ...` | **Gagal di ROM Transsion** — widget pelindung hilang/tidak terpasang; pasang ulang widget, jangan simpulkan layanan mati |
+| `cgroup.freeze` bernilai `1` saat background | UID dibekukan `Usf_Hiber`; cek widget pelindung dulu |
 | `FATAL EXCEPTION` / `Unable to create service` berulang | **Gagal** — kumpulkan stack trace, lapor pengguna |
 | `watch conn drop 4x` tak lama setelah `onCreate`/boot | **Gagal** — watchdog masih membunuh terlalu dini, lapor pengguna |
 
@@ -192,12 +235,17 @@ adb shell cmd notification list                          # NotifBaca termasuk li
 adb shell dumpsys deviceidle whitelist | grep notifbaca  # dikecualikan dari optimasi baterai
 adb shell am get-standby-bucket com.home.notifbaca       # 10=active ... 45=restricted (hindari 45)
 adb shell dumpsys jobscheduler | grep -A5 -B5 notifbaca  # job 4201 terjadwal periodik
+adb shell dumpsys appwidget | grep -i notifbaca         # widget pelindung terpasang
+adb shell cat /sys/fs/cgroup/apps/uid_$(adb shell dumpsys package com.home.notifbaca | sed -n 's/.*userId=\([0-9]*\).*/\1/p' | head -1)/cgroup.freeze  # 0 = tidak beku
 ```
 
 ## Kriteria selesai
 
 **Berhasil** kalau: skenario A–D lulus, E tidak menunjukkan layanan mati
-atau boros baterai tidak wajar, dan tidak ada pola log "Gagal" di atas.
+atau boros baterai tidak wajar, F menunjukkan `cgroup.freeze=0` selama
+widget terpasang, dan tidak ada pola log "Gagal" di atas. Kalau F gagal
+karena widget hilang, itu bukan bug layanan — pasang ulang widget lalu
+ulangi F sebelum menyimpulkan.
 
 **Rollback** kalau layanan justru tidak jalan sama sekali: install lagi
 APK rilis v1.0.2 dari GitHub Releases (menimpa), atau build ulang dari
@@ -211,12 +259,14 @@ Akhiri tugas dengan laporan ringkas berisi:
 1. Perangkat & versi Android (`getprop ro.product.model`,
    `getprop ro.build.version.release`, `getprop ro.build.version.sdk`).
 2. APK terpasang: versionCode/versionName dari Langkah 3.
-3. Hasil tiap skenario A–E: lulus/gagal + 5–15 baris log pendukung
+3. Hasil tiap skenario A–F: lulus/gagal + 5–15 baris log pendukung
    (tanpa isi notifikasi!).
-4. Pola log penting yang ditemukan dari tabel Langkah 7 (terutama
-   `stopReason` dan exception `startForeground`, kalau ada).
-5. Hasil Langkah 8 kalau dijalankan (standby bucket, status FGS).
-6. Kesimpulan: layanan bertahan di Android 16 atau masih mati, dan
+4. Status widget pelindung (terpasang/tidak) dan nilai `cgroup.freeze`
+   saat app di background.
+5. Pola log penting yang ditemukan dari tabel Langkah 7 (terutama
+   `stopReason`, exception `startForeground`, dan `Usf_Hiber` kalau ada).
+6. Hasil Langkah 8 kalau dijalankan (standby bucket, status FGS).
+7. Kesimpulan: layanan bertahan di Android 16 atau masih mati, dan
    dalam kondisi apa.
 
 Jangan upload APK hasil build atau membuat rilis GitHub — itu keputusan

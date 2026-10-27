@@ -26,11 +26,12 @@ echo "[1/6] aapt2 compile"
 aapt2 compile --dir res -o obj/res.zip
 
 echo "[2/6] aapt2 link"
-aapt2 link -o base.apk -I "$AJ" --manifest AndroidManifest.xml obj/res.zip
+aapt2 link -o base.apk -I "$AJ" --manifest AndroidManifest.xml \
+    --java obj obj/res.zip
 
 echo "[3/6] javac"
 javac -source 8 -target 8 -Xlint:-options -classpath "$AJ" \
-    -d obj src/com/home/notifbaca/*.java
+    -d obj obj/com/home/notifbaca/R.java src/com/home/notifbaca/*.java
 
 echo "[4/6] d8"
 d8 --release --lib "$AJ" --output dexout obj/com/home/notifbaca/*.class

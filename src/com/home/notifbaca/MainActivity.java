@@ -1,6 +1,7 @@
 package com.home.notifbaca;
 
 import android.app.Activity;
+import android.appwidget.AppWidgetManager;
 import android.content.ComponentName;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -57,6 +58,7 @@ public class MainActivity extends Activity {
     private Spinner voiceSp;
     private CheckBox voiceAll;
     private CheckBox muteCb;
+    private TextView widgetState;
     private TextToSpeech pickerTts;
     private boolean pickerReady;
     private SharedPreferences sp;
@@ -111,16 +113,10 @@ public class MainActivity extends Activity {
         s1.addView(voiceSp, gapTop(8));
 
         // Wadah TTS terpisah dari NLS, khusus untuk mengisi daftar suara.
-        // Wajib di-init di sini: kalau tidak, refreshVoices() langsung bail
-        // dan spinner cuma berisi "Automatis (default)".
-        pickerTts = new TextToSpeech(this, st -> {
-            if (st == TextToSpeech.SUCCESS) {
-                pickerReady = true;
-                runOnUiThread(this::refreshVoices);
-            } else {
-                Log.w("NotifBaca", "TTS picker gagal init: " + st);
-            }
-        });
+        // Pembuatannya juga jangan di main thread: bindService ke engine TTS
+        // bisa menggantung kalau engine lambat/mati, dan main thread yang macet
+        // membuat NLS berhenti memproses notifikasi.
+        createPickerTts();
 
         Button testVoice = btn("Tes suara terpilih", ACCENT, false);
         testVoice.setOnClickListener(v -> testVoice());
@@ -184,6 +180,18 @@ public class MainActivity extends Activity {
         reli.addView(holdCpu, gapTop(8));
         reli.addView(caption("Aktifkan kalau notifikasi telat saat layar mati. "
                 + "Tetap izinkan baterai/autostart di HP Infinix/Transsion."), gapTop(6));
+
+        // Khusus ROM Infinix/Transsion: Usf_Hiber membekukan seluruh UID app
+        // beberapa detik setelah layar utama ditekan, kecuali app punya widget
+        // di home screen (importantReason=widget).
+        Button pinWidget = btn("Pasang widget pelindung", ACCENT, false);
+        pinWidget.setOnClickListener(v -> pinWidget());
+        reli.addView(pinWidget, gapTop(12));
+        reli.addView(caption("Di HP Infinix/Transsion, widget ini wajib tetap "
+                + "ada di layar utama. Tanpa widget, sistem membekukan layanan "
+                + "saat aplikasi ditinggalkan sehingga notifikasi tidak dibaca."), gapTop(6));
+        widgetState = caption("");
+        reli.addView(widgetState, gapTop(4));
         root.addView(reli, gapTop(12));
 
         // aksi
@@ -481,15 +489,61 @@ public class MainActivity extends Activity {
         Toast.makeText(this, "Disimpan", Toast.LENGTH_SHORT).show();
     }
 
+    private void createPickerTts() {
+        final TextToSpeech[] ref = new TextToSpeech[1];
+        new Thread(() -> {
+            final TextToSpeech t;
+            try {
+                t = new TextToSpeech(this, status -> {
+                    if (status != TextToSpeech.SUCCESS) {
+                        Log.w("NotifBaca", "TTS picker gagal init: " + status);
+                        return;
+                    }
+                    pickerReady = true;
+                    runOnUiThread(() -> {
+                        if (pickerTts == null) pickerTts = ref[0];
+                        refreshVoices();
+                    });
+                });
+            } catch (Exception e) {
+                Log.w("NotifBaca", "TTS picker gagal dibuat", e);
+                return;
+            }
+            ref[0] = t;
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed()) {
+                    try {
+                        t.shutdown();
+                    } catch (Exception ignored) {
+                    }
+                    return;
+                }
+                if (pickerTts == null) pickerTts = t;
+                if (pickerReady) refreshVoices();
+            });
+        }, "ui-tts-init").start();
+    }
+
     private void refreshVoices() {
-        if (pickerTts == null) return;
-        java.util.Set<Voice> vs = null;
-        try {
-            vs = pickerTts.getVoices();
-        } catch (Exception e) {
-            Log.w("NotifBaca", "getVoices gagal", e);
-        }
-        if (vs == null) return;
+        final TextToSpeech t = pickerTts;
+        if (t == null) return;
+        // getVoices() adalah binder ke engine TTS. Jangan di main thread:
+        // kalau engine lambat/mati, seluruh proses (termasuk NLS) ikut macet.
+        new Thread(() -> {
+            java.util.Set<Voice> vs = null;
+            try {
+                vs = t.getVoices();
+            } catch (Exception e) {
+                Log.w("NotifBaca", "getVoices gagal", e);
+            }
+            if (vs == null) return;
+            final java.util.Set<Voice> got = vs;
+            runOnUiThread(() -> applyVoices(got));
+        }, "ui-voices").start();
+    }
+
+    private void applyVoices(java.util.Set<Voice> vs) {
+        if (isFinishing() || isDestroyed() || pickerTts == null) return;
         boolean all = voiceAll.isChecked();
         voiceNames.clear();
         voiceNames.add("Automatis (default)");
@@ -554,6 +608,15 @@ public class MainActivity extends Activity {
         String enabled = Settings.Secure.getString(
                 getContentResolver(), "enabled_notification_listeners");
         boolean izin = enabled != null && enabled.contains(getPackageName());
+        if (widgetState != null) {
+            int[] widgetIds = AppWidgetManager.getInstance(this)
+                    .getAppWidgetIds(new ComponentName(this, Widget.class));
+            boolean widgetOn = widgetIds.length > 0;
+            widgetState.setTextColor(widgetOn ? GREEN_OK : AMBER_NEED);
+            widgetState.setText(widgetOn
+                    ? "Widget pelindung: terpasang"
+                    : "Widget pelindung: belum terpasang");
+        }
         // Izin ada belum tentu layanan jalan (dibunuh battery-saver / putus
         // bind). NLS menulis cap last_hb tiap 15 detik saat masih hidup.
         long lastHb = sp.getLong("last_hb", 0);
@@ -629,6 +692,22 @@ public class MainActivity extends Activity {
         } catch (Exception e) {
             Log.w("NotifBaca", "info aplikasi gagal", e);
             Toast.makeText(this, "Buka Settings > Apps > NotifBaca", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void pinWidget() {
+        AppWidgetManager manager =
+                (AppWidgetManager) getSystemService(APPWIDGET_SERVICE);
+        ComponentName provider = new ComponentName(this, Widget.class);
+        if (manager != null && manager.isRequestPinAppWidgetSupported()) {
+            manager.requestPinAppWidget(provider, null, null);
+            Toast.makeText(this, "Tekan \"Tambahkan\" untuk memasang widget.",
+                    Toast.LENGTH_LONG).show();
+        } else {
+            Toast.makeText(this,
+                    "Launcher tidak mendukung. Tambahkan widget NotifBaca "
+                            + "secara manual dari daftar widget layar utama.",
+                    Toast.LENGTH_LONG).show();
         }
     }
 

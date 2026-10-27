@@ -92,8 +92,8 @@ public class NLS extends NotificationListenerService {
             new java.util.concurrent.ConcurrentLinkedQueue<>();
     private volatile boolean ttsReady;
     private volatile boolean ttsSpeaking;
-    private int ttsInitAttempts;
-    private int ttsInitGeneration;
+    private volatile int ttsInitAttempts;
+    private volatile int ttsInitGeneration;
     private int fgAttempts;
     private long createdElapsedMs;
     private long cpuWlDeadlineElapsedMs;
@@ -118,7 +118,7 @@ public class NLS extends NotificationListenerService {
         NOISE.add("com.facemoji.lite.transsion");
     }
 
-@Override
+    @Override
     public void onCreate() {
         super.onCreate();
         Log.i(TAG, "onCreate");
@@ -184,7 +184,11 @@ public class NLS extends NotificationListenerService {
                 .setAudioAttributes(ttsAudio)
                 .setOnAudioFocusChangeListener(f -> Log.i(TAG, "focus berubah: " + f))
                 .build();
-        initTts();
+        // TextToSpeech() dan configureTts() (getVoices/setVoice) adalah binder
+        // ke engine TTS. Kalau engine lambat/mati, panggilan itu bisa
+        // menggantung; jangan pernah di main thread karena heartbeat,
+        // watchdog, dan callback notifikasi semuanya ikut macet.
+        ttsHandler.post(this::initTts);
         startMinuteTicker();
         RebindJobService.schedule(this);
     }
@@ -210,24 +214,30 @@ public class NLS extends NotificationListenerService {
                     ttsReady = false;
                     Log.e(TAG, "init TTS gagal status=" + status
                             + " (percobaan " + ttsInitAttempts + "/" + TTS_INIT_MAX + ")");
-                    mainHandler.postDelayed(this::initTts, TTS_RETRY_MS);
+                    ttsHandler.postDelayed(this::initTts, TTS_RETRY_MS);
                     return;
                 }
-                try {
-                    configureTts();
-                    ttsInitAttempts = 0;
-                    ttsReady = true;
-                    drainQueue();
-                } catch (Exception e) {
-                    ttsReady = false;
-                    Log.e(TAG, "konfigurasi TTS gagal", e);
-                    mainHandler.postDelayed(this::initTts, TTS_RETRY_MS);
-                }
+                // onInit bisa datang di main thread. Konfigurasi engine
+                // (getVoices/setVoice/setLanguage) juga binder yang bisa
+                // menggantung, jadi jalankan seluruhnya di thread TTS.
+                ttsHandler.post(() -> {
+                    if (destroyed || gen != ttsInitGeneration) return;
+                    try {
+                        configureTts();
+                        ttsInitAttempts = 0;
+                        ttsReady = true;
+                        drainQueue();
+                    } catch (Exception e) {
+                        ttsReady = false;
+                        Log.e(TAG, "konfigurasi TTS gagal", e);
+                        ttsHandler.postDelayed(this::initTts, TTS_RETRY_MS);
+                    }
+                });
             });
         } catch (Exception e) {
             ttsReady = false;
             Log.e(TAG, "TextToSpeech gagal dibuat", e);
-            mainHandler.postDelayed(this::initTts, TTS_RETRY_MS);
+            ttsHandler.postDelayed(this::initTts, TTS_RETRY_MS);
         }
     }
 
@@ -363,8 +373,8 @@ public class NLS extends NotificationListenerService {
 
     private void updateCpuWakeLock() {
         if (destroyed || cpuWl == null) return;
-        boolean want = holdCpu && sConnected && powerManager != null
-                && !powerManager.isInteractive();
+        boolean interactive = powerManager != null && powerManager.isInteractive();
+        boolean want = holdCpu && sConnected && powerManager != null && !interactive;
         try {
             if (want) {
                 long nowElapsed = SystemClock.elapsedRealtime();
@@ -425,24 +435,15 @@ public class NLS extends NotificationListenerService {
             public void run() {
                 if (destroyed) return;
                 Log.i(TAG, "watch check");
-                // Cukup cek binder listener masih hidup. Dulu kode ini juga
-                // mewajibkan notifikasi FGS id=1 terlihat; padahal notifikasi
-                // itu bisa disembunyikan sistem (POST_NOTIFICATIONS ditolak /
-                // channel MIN), sehingga watchdog salah membunuh proses terus-
-                // menerus dan layanan tampak mati sendiri saat app ditutup.
-                boolean connected = false;
-                try {
-                    StatusBarNotification[] all = getActiveNotifications();
-                    if (all != null) {
-                        connected = true;
-                        Log.i(TAG, "watch ok, aktif=" + all.length);
-                    } else {
-                        Log.e(TAG, "watch: getActiveNotifications null");
-                    }
-                } catch (Exception e) {
-                    Log.e(TAG, "watch conn mati: " + e);
-                }
+                // JANGAN panggil getActiveNotifications() di sini (main
+                // thread). Di Android 16 + ROM Transsion binder itu bisa
+                // menggantung saat app di background: watchdog memblokir main
+                // thread, semua callback notifikasi antre, dan baru diproses
+                // saat app dibuka. Cukup percaya callback
+                // onListenerConnected/onListenerDisconnected.
+                boolean connected = sConnected;
                 if (connected) {
+                    Log.i(TAG, "watch ok, connected");
                     sConnected = true;
                     everConnected = true;
                     fails = 0;
@@ -614,26 +615,48 @@ public class NLS extends NotificationListenerService {
             // jangan diam selamanya sampai proses berikutnya.
             Log.w(TAG, "TTS belum siap, init ulang saat rebind");
             ttsInitAttempts = 0;
-            initTts();
+            ttsHandler.post(this::initTts);
         }
         loadSpoken();
-        try {
-            StatusBarNotification[] all = getActiveNotifications();
-            if (all != null) {
-                Log.i(TAG, "rescan aktif " + all.length);
+        rescanAsync();
+        ttsHandler.post(() -> Widget.refresh(this));
+    }
+
+    // getActiveNotifications() adalah binder ke system_server. Di Android 16
+    // panggilan ini bisa menggantung saat app background; kalau dijalankan di
+    // main thread, seluruh callback notifikasi ikut macet sampai app dibuka.
+    // Ambil daftar di thread sendiri, lalu proses di main thread.
+    private void rescanAsync() {
+        Thread t = new Thread(() -> {
+            StatusBarNotification[] all;
+            try {
+                all = getActiveNotifications();
+            } catch (Exception e) {
+                Log.e(TAG, "rescan gagal", e);
+                return;
+            }
+            if (all == null) {
+                Log.e(TAG, "rescan: getActiveNotifications null");
+                return;
+            }
+            final StatusBarNotification[] copy = all;
+            if (destroyed || mainHandler == null) return;
+            mainHandler.post(() -> {
+                if (destroyed) return;
+                Log.i(TAG, "rescan aktif " + copy.length);
                 // Cuma kejar yang segar: notif basi dilewati di consider(),
                 // dan dibatasi biar tidak borongan suara aneh saat buka app.
-                for (StatusBarNotification sbn : all) {
+                for (StatusBarNotification sbn : copy) {
                     if (speakQueue.size() >= CATCHUP_MAX_COUNT) {
                         Log.i(TAG, "rescan stop, budget habis");
                         break;
                     }
                     consider(sbn, true);
                 }
-            }
-        } catch (Exception e) {
-            Log.e(TAG, "rescan gagal", e);
-        }
+            });
+        }, "nls-rescan");
+        t.setDaemon(true);
+        t.start();
     }
 
     public void onListenerDisconnected() {
@@ -641,6 +664,7 @@ public class NLS extends NotificationListenerService {
         sConnected = false;
         updateCpuWakeLock();
         RebindJobService.schedule(this);
+        if (ttsHandler != null) ttsHandler.post(() -> Widget.refresh(this));
         // Self-heal: minta sistem bind ulang. Tanpa ini service diam
         // selamanya sampai user buka app (badge izin tetap hijau).
         try {
@@ -770,7 +794,7 @@ public class NLS extends NotificationListenerService {
                 lastTtsReviveMs = nowElapsed;
                 Log.w(TAG, "TTS belum siap, init ulang dari notifikasi masuk");
                 ttsInitAttempts = 0;
-                initTts();
+                ttsHandler.post(this::initTts);
             }
         }
         enqueue(text);
@@ -910,6 +934,7 @@ public class NLS extends NotificationListenerService {
         } catch (Exception e) {
             Log.w(TAG, "stopForeground gagal", e);
         }
+        if (ttsHandler != null) ttsHandler.post(() -> Widget.refresh(this));
         if (ttsThread != null) ttsThread.quitSafely();
         if (tts != null) {
             try {
